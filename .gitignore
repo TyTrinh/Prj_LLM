@@ -1,0 +1,33 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+*.egg-info/
+
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Large data & checkpoints (Never commit large binaries to git)
+data/*.bin
+data/*.jsonl
+data/*.parquet
+checkpoints/*.pt
+checkpoints/*.bin
+!checkpoints/.gitkeep
+!data/.gitkeep
+
+# Logs & Monitoring
+wandb/
+runs/
+*.log
+
+# OS & IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,16 @@
+# Core Deep Learning & Numerics
+torch>=2.2.0
+numpy>=1.24.0
+
+# Data & Tokenization
+datasets>=2.18.0
+tiktoken>=0.6.0
+tqdm>=4.66.0
+
+# Evaluation, Web UI & Logging
+matplotlib>=3.8.0
+gradio>=4.20.0
+wandb>=0.16.0
+tensorboard>=2.15.0
+openai>=1.14.0
+pytest>=8.0.0
