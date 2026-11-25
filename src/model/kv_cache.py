@@ -35,7 +35,16 @@ class KVCache:
         value: torch.Tensor,
         layer_idx: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Cập nhật key và value mới vào cache và trả về toàn bộ chuỗi lịch sử."""
+        """Cập nhật key và value mới vào cache và trả về toàn bộ chuỗi lịch sử.
+        
+        Args:
+            key: Tensor shape [B, n_heads, T, head_dim]
+            value: Tensor shape [B, n_heads, T, head_dim]
+            layer_idx: Chỉ số tầng Transformer
+            
+        Returns:
+            Tuple[Tensor, Tensor]: (full_key, full_value) shape [B, n_heads, total_len, head_dim]
+        """
         if self.k_cache[layer_idx] is None:
             self.k_cache[layer_idx] = key
             self.v_cache[layer_idx] = value
@@ -44,6 +53,12 @@ class KVCache:
             self.v_cache[layer_idx] = torch.cat([self.v_cache[layer_idx], value], dim=2)
 
         return self.k_cache[layer_idx], self.v_cache[layer_idx]
+
+    def get_seq_length(self, layer_idx: int = 0) -> int:
+        """Lấy độ dài chuỗi hiện tại đã lưu trữ trong cache."""
+        if self.k_cache[layer_idx] is None:
+            return 0
+        return self.k_cache[layer_idx].shape[2]
 
     def reset(self) -> None:
         """Xóa toàn bộ cache sau khi kết thúc 1 phiên sinh từ."""

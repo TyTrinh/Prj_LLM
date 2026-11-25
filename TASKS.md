@@ -20,24 +20,24 @@
     - [x]  Kiểm thử tính toàn vẹn (Round-trip test): Đảm bảo `decode(encode(s)) == s` với các chuỗi chứa ký tự đặc biệt, dấu câu và số
     - [ ]  Chạy token hóa toàn bộ tập Pre-train và lưu ra file nhị phân (`train.bin`, `val.bin` kiểu `uint16`) để nạp siêu tốc lên GPU.
 - **Lập trình Kiến trúc Decoder-Only Transformer bằng PyTorch thuần (Chiếm 10% điểm)**
-    - [ ]  Viết lớp `RMSNorm(nn.Module)` (hoặc `LayerNorm` chuẩn hóa trước - Pre-Norm để ổn định gradient)
-    - [ ]  Viết cơ chế mã hóa vị trí **RoPE (Rotary Positional Embedding)** áp dụng trực tiếp lên Q & K
-    - [ ]  Viết lớp `CausalSelfAttention(nn.Module)` có ma trận mặt nạ tam giác dưới (Causal Mask) chặn nhìn trộm tương lai và hỗ trợ Multi-Head Attention
-    - [ ]  Viết lớp `FeedForward(nn.Module)` (sử dụng kiến trúc **SwiGLU** hoặc Linear-GELU-Linear)
-    - [ ]  Gom thành `TransformerBlock(nn.Module)` có kết nối thặng dư (Residual Connections)
-    - [ ]  Lắp ráp toàn bộ thành `GPTModel(nn.Module)`, áp dụng **Weight Tying** ($W_{\text{head}} = W_E^T$) để tiết kiệm tham số cho mô hình nhỏ
-    - [ ]  Khởi tạo trọng số chuẩn (Gaussian $\mathcal{N}(0, 0.02)$, chia $\sqrt{2 \times n_{\text{layers}}}$ tại residual projection)
-    - [ ]  **Chốt Checkpoint 1:** Chạy Unit Test kiểm tra tensor đầu vào `[B, T]` đi qua `GPTModel` trả ra Logits `[B, T, |V|]` không lỗi shape + Hoàn thành bản Đề cương Kỹ thuật (2 trang)
+    - [x]  Viết lớp `RMSNorm(nn.Module)` (hoặc `LayerNorm` chuẩn hóa trước - Pre-Norm để ổn định gradient)
+    - [x]  Viết cơ chế mã hóa vị trí **RoPE (Rotary Positional Embedding)** áp dụng trực tiếp lên Q & K
+    - [x]  Viết lớp `CausalSelfAttention(nn.Module)` có ma trận mặt nạ tam giác dưới (Causal Mask) chặn nhìn trộm tương lai và hỗ trợ Multi-Head Attention
+    - [x]  Viết lớp `FeedForward(nn.Module)` (sử dụng kiến trúc Linear-GELU-Linear hoặc SwiGLU)
+    - [x]  Gom thành `TransformerBlock(nn.Module)` có kết nối thặng dư (Residual Connections)
+    - [x]  Lắp ráp toàn bộ thành `GPTModel(nn.Module)`, áp dụng **Weight Tying** ($W_{\text{head}} = W_E^T$) để tiết kiệm tham số cho mô hình nhỏ
+    - [x]  Khởi tạo trọng số chuẩn (Gaussian $\mathcal{N}(0, 0.02)$, chia $\sqrt{2 \times n_{\text{layers}}}$ tại residual projection)
+    - [x]  **Chốt Checkpoint 1:** Chạy Unit Test kiểm tra tensor đầu vào `[B, T]` đi qua `GPTModel` trả ra Logits `[B, T, |V|]` không lỗi shape + Hoàn thành bản Đề cương Kỹ thuật (2 trang)
 
 ## Giai đoạn 2: KV Cache & Pre-training base model
 
 - **Tự xây dựng KV Cache động (Chiếm 10% điểm)**
-    - [ ]  Thiết kế cấu trúc lưu trữ `KVCache` quản lý danh sách các tensor `(key_cache, value_cache)` cho từng tầng Transformer
-    - [ ]  Cập nhật hàm `forward` của `CausalSelfAttention` để hỗ trợ 2 chế độ:
+    - [x]  Thiết kế cấu trúc lưu trữ `KVCache` quản lý danh sách các tensor `(key_cache, value_cache)` cho từng tầng Transformer
+    - [x]  Cập nhật hàm `forward` của `CausalSelfAttention` để hỗ trợ 2 chế độ:
         1. *Prefill (Xử lý prompt đầu vào):* Tính toán toàn bộ chuỗi ban đầu và nạp vào cache.
         2. *Decoding (Sinh từng token tiếp theo):* Chỉ tính toán trên 1 token mới nhất ($T=1$), nối (concatenate) $K, V$ mới vào cache cũ để truy xuất lại toàn bộ lịch sử
-    - [ ]  Viết hàm sinh văn bản tự hồi quy `generate()` hỗ trợ Greedy Search, Temperature Sampling và Top-k / Top-p Sampling
-- **Tiền huấn luyện Base Model trên Kaggle/Colab**
+    - [x]  Viết hàm sinh văn bản tự hồi quy `generate()` hỗ trợ Greedy Search, Temperature Sampling và Top-k / Top-p Sampling
+- **Tiền huấn luyện Base Model trên Kaggle**
     - [ ]  Cấu hình siêu tham số mô hình vừa vặn 16GB VRAM (gợi ý: ~40M–60M tham số, `d_model=512`, `n_layers=8`, `n_heads=8`, `block_size=512`)
     - [ ]  Viết vòng lặp huấn luyện sử dụng `torch.cuda.amp.autocast(dtype=torch.float16)`, Gradient Accumulation và Cosine Learning Rate Scheduler.
     - [ ]  Chạy huấn luyện trên Kaggle GPU cho đến khi Validation Loss hội tụ ổn định, lưu checkpoint `base_model.pt`
@@ -71,9 +71,6 @@
     - [ ]  Viết hàm `get_batch_logps(logits, labels, mask)` tính tổng log-probability $\log P(y \mid x)$ của từng chuỗi phản hồi.
     - [ ]  ****[CẢI TIẾN 2]**** Triển khai cờ `length_normalization=True` để tránh hiện tượng Length Bias của DPO
     - [ ]  Tự viết hàm `dpo_loss(policy_chosen_logps, policy_rejected_logps, ref_chosen_logps, ref_rejected_logps, beta=0.1)`
-        
-        !image.png
-        
     - [ ]  **Áp dụng mẹo tiết kiệm 50% VRAM:** Trên cùng 1 mô hình duy nhất đã nạp `sft_lora.pt`:
         1. Gọi `set_lora_enabled(model, False)` dưới `torch.no_grad()` để lấy `ref_logps` ($\pi_{\text{ref}}$)
         2. Gọi `set_lora_enabled(model, True)` để tính `policy_logps` ($\pi_\theta$) và cập nhật đạo hàm
