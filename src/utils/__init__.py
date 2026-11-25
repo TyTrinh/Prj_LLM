@@ -11,6 +11,7 @@ from src.utils.profiler import KVCacheProfiler, ProfilingResult
 from src.utils.checkpoint import CheckpointManager
 from src.utils.seed import set_seed
 from src.utils.logger import get_logger
+from src.utils.tracker import WandbTracker
 
 __all__ = [
     "KVCacheProfiler",
@@ -18,4 +19,5 @@ __all__ = [
     "CheckpointManager",
     "set_seed",
     "get_logger",
+    "WandbTracker",
 ]

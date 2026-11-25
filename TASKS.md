@@ -11,13 +11,13 @@
 
 - **Thiết lập môi trường & Đường ống dữ liệu**
     - [x]  Tạo cấu trúc thư mục dự án (`src/model`, `src/tokenizer`, `src/alignment`, `src/guardrails`, `scripts/`, `notebooks/`)
-    - [ ]  Thiết lập bộ theo dõi huấn luyện (Weight & Biases/TensorBoard)
-- **Tự xây dựng Tokenizer (Thuật toán BPE - Chiếm 10% điểm)**
-    - [ ]  Cài đặt thuật toán Byte-Parin Encoding từ số 0 (hoặc huấn luyện từ điển BPE thuần túy trên dữ liệu thô, không dùng Tokenizer có sẵn của mô hình khác)
-    - [ ]  Khai báo và đăng ký bộ cứng Special Token
-    - [ ]  Viết 2 hàm cốt lõi: encode(text) → List[int] và decode(ids) → str
-    - [ ]  Viết hàm `save_vocab(path)` và `load_vocab(path)` ra file `vocab.json` & `merges.txt`
-    - [ ]  Kiểm thử tính toàn vẹn (Round-trip test): Đảm bảo `decode(encode(s)) == s` với các chuỗi chứa ký tự đặc biệt, dấu câu và số
+    - [x]  Thiết lập bộ theo dõi huấn luyện (Weight & Biases/TensorBoard)
+- **Tự xây dựng Tokenizer (Thuật toán Byte-Fallback BPE - Chiếm 10% điểm)**
+    - [x]  Cài đặt thuật toán Byte-Pair Encoding từ số 0 (hoặc huấn luyện từ điển BPE thuần túy trên dữ liệu thô, không dùng Tokenizer có sẵn của mô hình khác)
+    - [x]  Khai báo và đăng ký bộ cứng Special Token
+    - [x]  Viết 2 hàm cốt lõi: encode(text) → List[int] và decode(ids) → str
+    - [x]  Viết hàm `save_vocab(path)` và `load_vocab(path)` ra file `vocab.json` & `merges.txt`
+    - [x]  Kiểm thử tính toàn vẹn (Round-trip test): Đảm bảo `decode(encode(s)) == s` với các chuỗi chứa ký tự đặc biệt, dấu câu và số
     - [ ]  Chạy token hóa toàn bộ tập Pre-train và lưu ra file nhị phân (`train.bin`, `val.bin` kiểu `uint16`) để nạp siêu tốc lên GPU.
 - **Lập trình Kiến trúc Decoder-Only Transformer bằng PyTorch thuần (Chiếm 10% điểm)**
     - [ ]  Viết lớp `RMSNorm(nn.Module)` (hoặc `LayerNorm` chuẩn hóa trước - Pre-Norm để ổn định gradient)
