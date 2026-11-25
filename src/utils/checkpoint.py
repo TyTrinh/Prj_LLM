@@ -133,15 +133,17 @@ class CheckpointManager:
         return model
 
     @staticmethod
-    def save_lora_adapter(model: nn.Module, path: str) -> None:
-        """Lưu chỉ các ma trận LoRA Adapter."""
+    def save_lora_adapter(model: nn.Module, path: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Lưu ma trận LoRA Adapter theo định dạng chuẩn thống nhất với LoRAManager."""
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        lora_state = {k: v for k, v in model.state_dict().items() if "lora_" in k}
-        torch.save(lora_state, path)
+        lora_state = {k: v.cpu() for k, v in model.state_dict().items() if "lora_" in k}
+        payload = {"lora_state_dict": lora_state, "metadata": metadata or {}}
+        torch.save(payload, path)
 
     @staticmethod
     def load_lora_adapter(model: nn.Module, path: str, device: str = "cpu") -> nn.Module:
-        """Nạp các ma trận LoRA Adapter vào mô hình."""
-        lora_state = torch.load(path, map_location=device)
+        """Nạp các ma trận LoRA Adapter vào mô hình tương thích cả 2 định dạng."""
+        checkpoint = torch.load(path, map_location=device, weights_only=True)
+        lora_state = checkpoint.get("lora_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
         model.load_state_dict(lora_state, strict=False)
         return model

@@ -17,7 +17,7 @@ RESPONSIBILITY:
 
 import json
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 import regex as re
 
 from src.tokenizer.special_tokens import (
@@ -350,3 +350,34 @@ class BytePairTokenizer:
                 if len(parts) == 3:
                     p0, p1, new_id = int(parts[0]), int(parts[1]), int(parts[2])
                     self.merges[(p0, p1)] = new_id
+
+    def apply_chat_template(
+        self,
+        messages: List[Dict[str, str]],
+        tokenize: bool = False,
+        add_generation_prompt: bool = False,
+    ) -> Union[str, List[int]]:
+        """
+        Định dạng danh sách hội thoại theo Chat Template chuẩn:
+        - Mỗi lượt thoại:
+            + role == 'user': `<|user|>{content}`
+            + role == 'assistant': `<|assistant|>{content}<|eos|>`
+        - add_generation_prompt=True: tự động thêm `<|assistant|>` ở cuối để mồi sinh.
+        - tokenize=True: trả về list token IDs thay vì chuỗi string.
+        """
+        formatted = ""
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "").strip()
+            if role == "user":
+                formatted += f"{USER_TOKEN}{content}"
+            elif role == "assistant":
+                formatted += f"{ASSISTANT_TOKEN}{content}{EOS_TOKEN}"
+
+        if add_generation_prompt:
+            formatted += ASSISTANT_TOKEN
+
+        if tokenize:
+            return self.encode(formatted)
+        return formatted
+

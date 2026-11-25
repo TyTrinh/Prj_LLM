@@ -56,8 +56,8 @@
     - [x]  **[CẢI TIẾN 1 - 10% điểm]** Hàm `merge_and_unload()` gập trọng số cho zero-latency inference
     - [x]  Đóng băng toàn bộ trọng số gốc (`requires_grad = False`), chỉ mở khóa tham số của `LoRALinear` và kiểm tra tỷ lệ tham số trainable (thường < 3%)
 - **Huấn luyện SFT (Supervised Fine-Tuning)**
-    - [ ]  Tải tập `Alpaca-Cleaned`, định dạng lại theo Chat Template thống nhất: `<|user|>{prompt}<|assistant|>{response}<|eos|>`
-    - [ ]  **Tạo Loss Mask (Quan trọng):** Gán nhãn `-100` cho toàn bộ phần `<|user|>{prompt}` để hàm Cross-Entropy Loss chỉ tính lỗi trên câu trả lời của Assistant (không ép mô hình học thuộc lòng câu hỏi)
+    - [x]  Tải tập `Alpaca-Cleaned`, định dạng lại theo Chat Template thống nhất: `<|user|>{prompt}<|assistant|>{response}<|eos|>`
+    - [x]  **Tạo Loss Mask (Quan trọng):** Gán nhãn `-100` cho toàn bộ phần `<|user|>{prompt}` để hàm Cross-Entropy Loss chỉ tính lỗi trên câu trả lời của Assistant (không ép mô hình học thuộc lòng câu hỏi)
     - [ ]  Chạy huấn luyện SFT trên Kaggle trong ~30–60 phút, lưu trọng số nhánh LoRA thành `sft_lora.pt`
     - [ ]  **Chốt Checkpoint 3A:** Xuất biểu đồ SFT Loss + Chạy thử nghiệm đối chứng câu trả lời trước SFT (nói lan man) và sau SFT (trả lời đúng câu hỏi và biết dừng ở `<|eos|>`)
 

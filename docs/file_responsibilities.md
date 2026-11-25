@@ -23,7 +23,7 @@ Tài liệu này định nghĩa rõ ràng nguyên lý **Đơn Trách Nhiệm (Si
 | Đường dẫn File | Đơn Trách Nhiệm (SRP) | Đầu Vào (Inputs) | Đầu Ra (Outputs) |
 | :--- | :--- | :--- | :--- |
 | `src/inference/__init__.py` | Expose `InferenceEngine` và `Sampler` cho các tầng bên ngoài. | Không | Module export |
-| `src/inference/engine.py` | Điều phối luồng sinh văn bản từ đầu đến cuối: Guardrail $\rightarrow$ Tokenize $\rightarrow$ Model $\rightarrow$ Sampler $\rightarrow$ Decode. | Prompt (str) + cấu hình sinh từ | Kết quả văn bản (str) + metrics độ trễ |
+| `src/inference/engine.py` | Điều phối luồng sinh văn bản từ đầu đến cuối: Input Guardrail $\rightarrow$ Chat Template Tokenize $\rightarrow$ Model Forward (KV Cache/Naive) $\rightarrow$ Sampler $\rightarrow$ Output Guardrail $\rightarrow$ Decode. Đo đạc chính xác độ trễ (latency_ms) và thông lượng (tokens_per_sec). | Prompt (str) + cấu hình sinh từ | Kết quả văn bản (str) + metrics độ trễ thực tế |
 | `src/inference/sampler.py` | Biến đổi phân phối Logits thành Token ID tiếp theo qua Greedy, Temperature, Top-k, Top-p. | `logits` [B, vocab_size] + siêu tham số | `next_token_id` [B, 1] |
 
 ---
@@ -53,6 +53,7 @@ Tài liệu này định nghĩa rõ ràng nguyên lý **Đơn Trách Nhiệm (Si
 ### D. Khối Căn chỉnh Hành vi (`src/alignment/`)
 | Đường dẫn File | Đơn Trách Nhiệm (SRP) | Đầu Vào (Inputs) | Đầu Ra (Outputs) |
 | :--- | :--- | :--- | :--- |
+| `src/alignment/sft_dataset.py` | Chuẩn bị dữ liệu SFT (`Alpaca-Cleaned`), định dạng Chat Template `<|user|>{prompt}<|assistant|>{response}<|eos|>` và Target Loss Masking (`ignore_index=-100`). | Danh sách dict thô / file JSON | Tensors `input_ids`, `labels`, `attention_mask` |
 | `src/alignment/dpo_loss.py` | Tính hàm mất mát DPO Loss, Implicit Reward Margin và Length Normalization. | Logps của Policy và Reference | Giá trị Loss (vô hướng) + Reward margins |
 | `src/alignment/preference_dataset.py` | Xử lý tập dữ liệu cặp ưu tiên (`hh-rlhf`) và tạo `response_mask` tách biệt prompt. | Cặp mẫu JSON/Dict | PyTorch Tensors sẵn sàng cho DataLoader |
 

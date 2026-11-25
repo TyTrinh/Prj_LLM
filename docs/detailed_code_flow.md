@@ -66,9 +66,14 @@ flowchart TD
     Train --> Checkpoint["Lưu sft_lora.pt (Chỉ chứa tham số LoRA A và B ~ vài MB)"]
 ```
 
-1. **Chuẩn hóa Chat Template:** Định dạng mỗi mẫu hội thoại thành:
-   `<|user|>{prompt}<|assistant|>{response}<|eos|>`
-2. **Tạo Mặt Nạ Bỏ Qua (Loss Mask):** Toàn bộ các token từ `<|user|>` đến hết `{prompt}` được gán nhãn giá trị `-100`. Khi tính `nn.CrossEntropyLoss(ignore_index=-100)`, gradient chỉ tập trung học cách trả lời của Assistant, không học thuộc lòng câu hỏi.
+1. **Chuẩn hóa Chat Template & Đồng bộ Inference:**
+   - Định dạng mỗi mẫu hội thoại thành: `<|user|>{prompt}<|assistant|>{response}<|eos|>`.
+   - `BytePairTokenizer.apply_chat_template()` hỗ trợ `add_generation_prompt=True` khi suy luận để tự động chèn `<|assistant|>` ở cuối, loại bỏ hoàn toàn Training-Serving Skew.
+2. **Tạo Mặt Nạ Bỏ Qua (Target Loss Masking):**
+   - Lớp `SFTDataCollator` tách biệt ranh giới prompt `<|user|>{prompt}<|assistant|>` và completion `{response}<|eos|>`.
+   - Toàn bộ token prompt và padding `<|pad|>` được gán nhãn `-100`.
+   - Khi tính `nn.CrossEntropyLoss(ignore_index=-100)`, gradient tại các vị trí này bị triệt tiêu bằng 0.0 tuyệt đối.
+   - **Bảo tồn Stop Token:** Token `<|eos|>` của Assistant bắt buộc giữ nguyên nhãn token ID thực tế (không bị mask) để mô hình học cách dừng sinh câu trả lời đúng lúc.
 3. **Tiết kiệm tài nguyên:** Chỉ có hai ma trận $A \in \mathbb{R}^{r \times d}$ và $B \in \mathbb{R}^{d \times r}$ của các khối LoRA được tính gradient.
 
 ---

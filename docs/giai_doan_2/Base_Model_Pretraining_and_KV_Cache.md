@@ -8,8 +8,8 @@
 > - `src/utils/tracker.py`: WandbTracker (Weights & Biases Real-time Tracking)  
 > - `src/utils/profiler.py`: KVCacheProfiler (Đo đạc thực nghiệm 4 chỉ số hiệu năng)  
 > - `notebooks/01_pretrain_base_model.ipynb`: Quy trình huấn luyện Cloud GPU & Benchmark  
-> **Trạng thái:** [x] Hoàn thành kiến trúc & Pipeline, Sẵn sàng huấn luyện  
-> **Mục tiêu lưu trữ:** Tài liệu kỹ thuật chi tiết phục vụ báo cáo khoa học và bảo vệ đồ án, giải thích từ cơ sở toán học, thiết kế kiến trúc đến cơ chế vận hành thực nghiệm.
+> **Trạng thái:** [x] Hoàn thành kiến trúc & Pipeline, Đã qua kiểm thử thực tế trên Kaggle GPU  
+> **Mục tiêu lưu trữ:** Tài liệu kỹ thuật chi tiết phục vụ báo cáo khoa học và bảo vệ đồ án, giải thích từ cơ sở toán học, thiết kế kiến trúc, phân tích lỗi thực tế đến cơ chế vận hành thực nghiệm.
 
 ---
 
@@ -114,8 +114,9 @@ Hệ thống thiết kế lớp `KVCache` quản lý danh sách các tensor `(k_
 ### 4.1. Siêu tham số Mô hình (Vừa vặn 16GB VRAM)
 | Siêu tham số | Giá trị | Giải thích kỹ thuật |
 | :--- | :--- | :--- |
-| `vocab_size` | 8,192 | Từ điển Byte-Fallback BPE đã tối ưu cho văn bản tiếng Anh |
-| `block_size` ($L$) | 512 | Độ dài ngữ cảnh tối đa trong giai đoạn pre-training |
+| `vocab_size` | Động (`len(tokenizer.vocab)`) | Đồng bộ tuyệt đối với từ điển BPE thực tế, tránh lỗi shape lệch |
+| `block_size` ($L$) | 2,048 | Hỗ trợ RoPE context window lên tới 2048 cho profiling |
+| `train_block_size` | 512 | Độ dài ngữ cảnh huấn luyện thực tế để tối ưu VRAM và tốc độ duyệt |
 | `n_layers` | 8 | 8 khối Transformer Block |
 | `n_heads` | 8 | 8 đầu Self-Attention ($d_{\text{head}} = 64$) |
 | `d_model` | 512 | Chiều không gian nhúng ẩn |
@@ -127,7 +128,7 @@ Hệ thống thiết kế lớp `KVCache` quản lý danh sách các tensor `(k_
 1. **Mixed Precision (`torch.amp.autocast(dtype=torch.float16)`):** Giảm dung lượng VRAM tính toán kích hoạt xuống 50%, tăng tốc độ tính toán qua Tensor Cores.
 2. **Gradient Accumulation (4 steps):** Kích thước micro-batch $B=32$, tích lũy qua 4 bước tạo thành effective batch size $32 \times 4 = 128$ chuỗi ($65,536$ tokens/step) giúp ước lượng gradient ổn định mà không tràn bộ nhớ.
 3. **Cosine Learning Rate Scheduler with Warmup:**
-   - 300 steps đầu tiên: Tăng tuyến tính từ $0$ lên $5 \times 10^{-4}$ (Linear Warmup) giúp ổn định trọng số ban đầu.
+   - 200 steps đầu tiên: Tăng tuyến tính từ $0$ lên $5 \times 10^{-4}$ (Linear Warmup) giúp ổn định trọng số ban đầu.
    - Sau đó giảm dần theo đường cong hàm Cosine về $5 \times 10^{-5}$ (Decay).
 4. **Gradient Clipping (1.0):** Cắt tỉa chuẩn vector đạo hàm $\|g\|_2 \le 1.0$ ngăn ngừa bùng nổ gradient (gradient exploding).
 
@@ -150,26 +151,131 @@ $$L \in \{128, 512, 1024, 2048\}$$
 | **$L=2048$** | Bật KV Cache | Ổn định | Tăng do prompt | Thấp ($\mathcal{O}(1)$) | Chiếm thêm bộ nhớ cache | **$\ge 8.0\text{x}$** |
 | | Tắt KV Cache | Cực kỳ chậm | Tăng do prompt | Cực kỳ cao | Thấp | $1.00\text{x}$ |
 
-### Nhận xét & Đánh giá Khoa học:
-- **Tốc độ sinh từ & TPOT:** Khi độ dài ngữ cảnh $L$ tăng lên 2048, chế độ Tắt KV Cache rơi vào tình trạng quá tải do phải tính lại tích vô hướng Attention của toàn bộ chuỗi cũ ở mỗi bước sinh, dẫn đến Next Token Latency (TPOT) tăng vọt. Trong khi đó, chế độ Bật KV Cache duy trì TPOT ổn định ở mức $\mathcal{O}(1)$.
-- **Đánh đổi Bộ nhớ (Memory-Speed Tradeoff):** KV Cache lưu trữ các tensor Key và Value của tất cả các tầng, làm tăng mức sử dụng Peak VRAM theo công thức:
-  $$\text{VRAM}_{\text{cache}} = 2 \times n_{\text{layers}} \times B \times n_{\text{heads}} \times L \times d_{\text{head}} \times \text{bytes\_per\_elem}$$
-  Đây là sự đánh đổi hoàn toàn xứng đáng giữa dung lượng bộ nhớ chấp nhận được để đổi lấy gia tốc tốc độ sinh từ gấp 5–10 lần ở các chuỗi dài.
-- **Biểu đồ trực quan:** Được lưu trữ tự động tại `docs/figures/kv_cache_benchmark.png` và đồng bộ lên Weights & Biases Dashboard.
+---
+
+## 6. NHẬT KÝ LỖI THỰC NGHIỆM & GIẢI THÍCH CHI TIẾT CÁCH KHẮC PHỤC (MISTAKES & DETAILED FIXES)
+
+Trong quá trình triển khai thực tế trên môi trường Cloud GPU (Kaggle), một số lỗi kỹ thuật và bất đồng bộ đã phát sinh. Dưới đây là phân tích chi tiết bản chất lỗi, hậu quả và cơ sở kỹ thuật của cách khắc phục:
+
+### 6.1. Lỗi đường dẫn tương đối khi Resume Checkpoint
+* **File vi phạm:** `notebooks/01_pretrain_base_model.ipynb`
+* **Vi phạm:** Sử dụng đường dẫn tương đối `CHECKPOINT_DIR = "checkpoints"`.
+* **Lỗi trước vi phạm & Hậu quả gây ra:**
+  - *Bản chất lỗi:* Trong Jupyter Notebook trên Kaggle, khi người dùng chạy các lệnh điều hướng như `%cd /kaggle/working/Prj_LLM` hoặc `%cd /kaggle/working`, con trỏ thư mục làm việc hiện tại (`os.getcwd()`) bị thay đổi giữa các cell hoặc sau các phiên restart kernel.
+  - *Hậu quả:* Lệnh `os.path.exists("checkpoints/last_checkpoint.pt")` đi tìm file tại `/kaggle/working/checkpoints/last_checkpoint.pt` thay vì thư mục thật `/kaggle/working/Prj_LLM/checkpoints/last_checkpoint.pt`. Kết quả là hàm trả về `False`, biến `start_step` bị reset về `0`, ép mô hình phải huấn luyện lại từ đầu dù file checkpoint vẫn tồn tại trên ổ đĩa. Đồng thời, Weights & Biases ném cảnh báo xung đột step: *"Tried to log to step 1 that is less than current step 950"*.
+* **Cách khắc phục & Giải thích chi tiết:**
+  - *Mã nguồn:*
+    ```python
+    CHECKPOINT_DIR = "/kaggle/working/Prj_LLM/checkpoints"
+    LAST_CKPT_PATH = os.path.join(CHECKPOINT_DIR, "last_checkpoint.pt")
+    BEST_CKPT_PATH = os.path.join(CHECKPOINT_DIR, "base_model.pt")
+    ```
+  - *Giải thích tại sao sửa như vậy:* Sử dụng **đường dẫn tuyệt đối (Absolute Path)** giúp hệ thống file đạt tính xác định (deterministic) 100%. Bất kể con trỏ làm việc của Python đang đứng ở `/kaggle/working`, `/root` hay `/tmp`, đường dẫn tuyệt đối luôn trỏ thẳng và chính xác vào vị trí vật lý của file trên ổ đĩa, loại bỏ hoàn toàn sự phụ thuộc vào trạng thái con trỏ của Jupyter Notebook.
+
+### 6.2. Lỗi TypeError: RNG state must be a torch.ByteTensor
+* **File vi phạm:** `src/utils/checkpoint.py`
+* **Vi phạm:** Nạp trực tiếp tensor trạng thái ngẫu nhiên `rng_state` vào hàm `torch.set_rng_state()` mà không chuẩn hóa kiểu dữ liệu ByteTensor và thiết bị CPU.
+* **Lỗi trước vi phạm & Hậu quả gây ra:**
+  - *Bản chất lỗi:* Khi lưu checkpoint, ta lưu `checkpoint["rng_state"] = torch.get_rng_state()`. Tuy nhiên trên Kaggle chạy PyTorch 2.11 trên hệ điều hành Linux, hàm backend C++ (`default_generator.set_state(...)`) yêu cầu tensor truyền vào bắt buộc phải là kiểu `torch.ByteTensor` (tức `torch.uint8`) và bắt buộc phải nằm trên bộ nhớ **CPU**. Khi file `.pt` được nạp qua `torch.load(..., map_location=device)`, nếu tensor bị lệch kiểu hoặc bị đưa sang GPU, PyTorch sẽ từ chối nhận.
+  - *Hậu quả:* Ném ngoại lệ `TypeError: RNG state must be a torch.ByteTensor` tại dòng `torch.set_rng_state(checkpoint["rng_state"])`, làm sập toàn bộ quá trình nạp checkpoint và chặn đứng tính năng Auto-Resume.
+* **Cách khắc phục & Giải thích chi tiết:**
+  - *Mã nguồn:*
+    ```python
+    try:
+        if "rng_state" in checkpoint and checkpoint["rng_state"] is not None:
+            rng = checkpoint["rng_state"]
+            if isinstance(rng, torch.Tensor):
+                torch.set_rng_state(rng.cpu().to(dtype=torch.uint8))
+        if torch.cuda.is_available() and device.startswith("cuda") and checkpoint.get("cuda_rng_state") is not None:
+            cuda_rng = checkpoint["cuda_rng_state"]
+            if isinstance(cuda_rng, torch.Tensor):
+                torch.cuda.set_rng_state(cuda_rng.cpu().to(dtype=torch.uint8))
+    except Exception as e:
+        print(f"[Checkpoint Info] Bỏ qua khôi phục RNG state do khác biệt môi trường ({e}).")
+    ```
+  - *Giải thích tại sao sửa như vậy:*
+    1. Gọi `.cpu().to(dtype=torch.uint8)` để đảm bảo 100% tensor ở đúng định dạng `ByteTensor` trên CPU theo chuẩn C++ của PyTorch.
+    2. Bọc khối phòng vệ `try-except`: Trạng thái ngẫu nhiên chỉ phục vụ việc tái lập thứ tự xáo trộn ngẫu nhiên. Nếu có sự không tương thích giữa các phiên bản PyTorch khác nhau (ví dụ lưu trên Windows, load trên Linux), việc bỏ qua nó không hề ảnh hưởng đến trọng số mô hình hay trạng thái của Optimizer AdamW, nhưng giúp bảo vệ chương trình không bao giờ bị crash.
+
+### 6.3. Lỗi Import sai tên class export của Tokenizer
+* **File vi phạm:** `notebooks/01_pretrain_base_model.ipynb` và `src/tokenizer/__init__.py`
+* **Vi phạm:** Import sai tên định danh class: sử dụng `from src.tokenizer import BPETokenizer` trong khi class thực tế được định nghĩa trong codebase là `BytePairTokenizer`.
+* **Lỗi trước vi phạm & Hậu quả gây ra:**
+  - *Bản chất lỗi:* Sự bất đồng bộ giữa tên class trong module `src/tokenizer/bpe.py` (`BytePairTokenizer`) và tên gọi quy ước ở tầng ứng dụng (`BPETokenizer`).
+  - *Hậu quả:* Python ném ngoại lệ `ImportError: cannot import name 'BPETokenizer' from 'src.tokenizer'`, làm dừng chương trình ngay tại Cell chuẩn bị dữ liệu.
+* **Cách khắc phục & Giải thích chi tiết:**
+  - *Mã nguồn:*
+    1. Cập nhật Cell 2 trong Notebook: `from src.tokenizer import BytePairTokenizer`.
+    2. Cập nhật `src/tokenizer/__init__.py` bổ sung Alias:
+       ```python
+       BPETokenizer = BytePairTokenizer
+       __all__ = [..., "BytePairTokenizer", "BPETokenizer"]
+       ```
+  - *Giải thích tại sao sửa như vậy:* Kỹ thuật tạo **Alias** trong Python giúp duy trì tính tương thích ngược (Backward Compatibility). Dù người dùng gọi theo thói quen ngắn gọn (`BPETokenizer`) hay tên chuẩn của kiến trúc (`BytePairTokenizer`), hệ thống đều nhận diện chính xác mà không phá vỡ bất kỳ mã nguồn hiện có nào.
+
+### 6.4. Lỗi tính toán và ghi log Loss trong Gradient Accumulation
+* **File vi phạm:** `notebooks/01_pretrain_base_model.ipynb` và `scripts/train_base.py`
+* **Vi phạm:** Đo lường và ghi nhận loss chỉ lấy giá trị của micro-step cuối cùng: `current_loss = loss.item() * GRAD_ACCUM_STEPS`.
+* **Lỗi trước vi phạm & Hậu quả gây ra:**
+  - *Bản chất lỗi:* Trong kỹ thuật Gradient Accumulation với 4 micro-steps, tại mỗi micro-step ta chia `micro_loss / 4` rồi gọi `backward()`. Đến cuối vòng lặp, biến `loss` chỉ lưu giá trị của riêng micro-step thứ 4. Khi nhân ngược lại với 4, giá trị này chỉ đại diện cho 32 mẫu cuối cùng chứ không phải trung bình của cả 128 mẫu trong cả batch hiệu dụng.
+  - *Hậu quả:* Biểu đồ loss ghi nhận lên Weights & Biases bị dao động răng cưa cực mạnh (nhiễu biên độ lớn), gây hiểu lầm rằng mô hình không ổn định hoặc learning rate quá cao.
+* **Cách khắc phục & Giải thích chi tiết:**
+  - *Mã nguồn:*
+    ```python
+    accum_loss = 0.0
+    for micro_step in range(GRAD_ACCUM_STEPS):
+        x, y = get_batch("train")
+        with torch.amp.autocast(...):
+            logits = model(x)
+            micro_loss = criterion(...)
+            micro_loss_scaled = micro_loss / GRAD_ACCUM_STEPS
+        accum_loss += micro_loss.item()
+        scaler.scale(micro_loss_scaled).backward()
+
+    current_train_loss = accum_loss / GRAD_ACCUM_STEPS
+    ```
+  - *Giải thích tại sao sửa như vậy:* Về mặt toán học, hàm mất mát của batch lớn gồm $K$ micro-batches là:
+    $$\mathcal{L}_{\text{total}} = \frac{1}{K} \sum_{k=1}^K \mathcal{L}_k$$
+    Cộng dồn `accum_loss` từ từng micro-step rồi chia cho $K$ phản ánh đúng 100% giá trị kỳ vọng toán học của toàn bộ batch, giúp đường cong hàm mất mát (loss curve) mượt mà và phản ánh chính xác sự hội tụ của gradient.
+
+### 6.5. Lỗi lệch thứ tự lưu Checkpoint dẫn đến sai lệch best_val_loss trong Metadata
+* **File vi phạm:** `notebooks/01_pretrain_base_model.ipynb`
+* **Vi phạm:** Lưu `last_checkpoint.pt` trước khi cập nhật `best_val_loss` mới.
+* **Lỗi trước vi phạm & Hậu quả gây ra:**
+  - *Bản chất lỗi:* Code cũ gọi `CheckpointManager.save_checkpoint(LAST_CKPT_PATH, best_val_loss=best_val_loss, ...)` trước, sau đó mới kiểm tra:
+    `if losses["val"] < best_val_loss: best_val_loss = losses["val"]`.
+  - *Hậu quả:* Khi validation loss đạt kỷ lục mới (ví dụ giảm từ 0.85 xuống 0.71), file `last_checkpoint.pt` trên ổ đĩa vẫn mang giá trị cũ là 0.85. Nếu phiên Kaggle bị ngắt ngay sau đó, khi resume lại, hệ thống sẽ đọc kỷ lục cũ là 0.85, làm sai lệch logic so sánh kỷ lục ở các bước tiếp theo.
+* **Cách khắc phục & Giải thích chi tiết:**
+  - *Mã nguồn:* Đảo thứ tự thực hiện: Kiểm tra validation loss, cập nhật biến `best_val_loss`, lưu file trọng số sạch `base_model.pt` TRƯỚC, sau đó mới truyền `best_val_loss` đã cập nhật vào hàm `save_checkpoint(LAST_CKPT_PATH)`.
+  - *Giải thích tại sao sửa như vậy:* Tuân thủ nguyên lý **Tính toàn vẹn trạng thái (State Consistency)**: Trạng thái được ghi xuống ổ đĩa (Persistent Storage) phải luôn đồng nhất và phản ánh trạng thái mới nhất của bộ nhớ RAM tại thời điểm lưu.
+
+### 6.6. Mâu thuẫn giữa block_size=512 và các mốc Profiling L=2048
+* **File vi phạm:** `notebooks/01_pretrain_base_model.ipynb` và `src/config.py`
+* **Vi phạm:** Khởi tạo `ModelConfig(block_size=512)` nhưng kịch bản thực nghiệm định lượng KV Cache lại yêu cầu đo ở các mốc $L \in \{128, 512, 1024, 2048\}$.
+* **Lỗi trước vi phạm & Hậu quả gây ra:**
+  - *Bản chất lỗi:* Thuật toán mã hóa vị trí RoPE (`RotaryEmbedding`) và ma trận Attention Mask tam giác dưới chỉ được chuẩn bị dải vị trí $0 \dots 511$.
+  - *Hậu quả:* Khi đưa prompt dài $L=1024$ hoặc $2048$ vào mô hình để đo đạc định lượng, hệ thống sẽ ném lỗi `IndexError: index out of bounds` hoặc gây lỗi bộ nhớ CUDA out-of-bounds.
+* **Cách khắc phục & Giải thích chi tiết:**
+  - *Mã nguồn:*
+    ```python
+    model_cfg = ModelConfig(
+        vocab_size=ACTUAL_VOCAB_SIZE,
+        block_size=2048,      # Kiến trúc hỗ trợ context window tối đa 2048
+        n_layers=8,
+        n_heads=8,
+        d_model=512,
+    )
+    TRAIN_BLOCK_SIZE = 512    # Trong lúc train chỉ cắt batch độ dài 512
+    ```
+  - *Giải thích tại sao sửa như vậy:* Tách biệt rõ ràng giữa **Năng lực tối đa của kiến trúc (Architecture Capacity: 2048)** và **Kích thước lát cắt huấn luyện (Training Slice: 512)**. Nhờ đó, ma trận RoPE có sẵn dải tần số cho 2048 vị trí để phục vụ Profiling mượt mà, trong khi quá trình pre-train vẫn tiết kiệm được VRAM và tăng tốc độ xử lý bằng cách giới hạn chuỗi dữ liệu ở 512 tokens.
 
 ---
 
-## 6. KẾT QUẢ KIỂM THỬ XÁC MINH (VERIFICATION)
+## 7. KẾT QUẢ KIỂM THỬ XÁC MINH (VERIFICATION)
 
 Toàn bộ các thành phần của Giai đoạn 2 đã được kiểm thử tự động với PyTest:
-- `tests/test_kv_cache_generate.py`:
-  - `test_kv_cache_update_and_reset`: Kiểm tra cập nhật tensor shape `[B, H, T, D]` và reset bộ nhớ.
-  - `test_kv_cache_logits_equivalence_with_naive`: Đảm bảo logits của token mới khi dùng KV Cache khớp 100% với Full Attention không dùng cache.
-  - `test_gpt_model_generate_greedy_equivalence`: Kiểm tra kết quả sinh văn bản Greedy Search giữa Bật và Tắt KV Cache giống nhau tuyệt đối.
-- `tests/test_checkpoint.py`:
-  - `test_base_model_save_and_load`: Lưu và nạp Base Model state dict.
-  - `test_full_training_state_resume`: Lưu và nạp toàn bộ trạng thái Model, Optimizer, Scheduler, khôi phục đúng step và loss.
-- `tests/test_profiler.py`:
-  - `test_profiler_measure_cpu`: Đo đạc cả 4 chỉ số không bị lỗi runtime.
+- `tests/test_kv_cache_generate.py`: Đảm bảo logits của token mới khi dùng KV Cache khớp 100% với Full Attention không dùng cache; Greedy search cho output đồng nhất.
+- `tests/test_checkpoint.py`: Đảm bảo lưu và phục hồi trạng thái Model, Optimizer, Scheduler, RNG state chính xác 100%.
+- `tests/test_profiler.py`: Đảm bảo hàm đo đạc 4 chỉ số (Tokens/s, TTFT, TPOT, VRAM) vận hành ổn định trên cả CPU và GPU.
 
 **Kết quả: 24/24 tests passed (100% Pass Rate).**

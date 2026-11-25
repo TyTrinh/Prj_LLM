@@ -174,7 +174,68 @@ tests\test_kv_cache_generate.py ....                                     [100%]
 
 ---
 
-## 6. KẾT LUẬN & SẴN SÀNG CHO BƯỚC TIẾP THEO
+## 6. NHẬT KÝ SỰ CỐ & PHÂN TÍCH KHẮC PHỤC (POST-MORTEM & FIX LOG)
+
+Trong quá trình thiết kế, triển khai và kiểm thử cơ chế Dynamic KV Cache cùng hàm sinh tự hồi quy, các vấn đề kỹ thuật và rủi ro thuật toán sau đã được phát hiện và giải quyết triệt để theo đúng quy chuẩn 4 yếu tố:
+
+### Sự cố 1: Sai lệch góc quay RoPE do không truyền tham số offset `start_pos` (CRIT-01)
+- **File vi phạm:** [`src/model/attention.py`](../../src/model/attention.py) & [`src/model/transformer.py`](../../src/model/transformer.py)
+- **Vi phạm gì:** Hàm `forward` của Attention và Transformer ban đầu không hỗ trợ hoặc không tự động tính toán tham số offset vị trí `start_pos` khi áp dụng RoPE cho token tiếp theo trong giai đoạn Decoding ($T=1$).
+- **Lỗi trước vi phạm, gây ra hậu quả gì:**
+  - Trong giai đoạn Decoding, token đơn lẻ mới được đưa vào có kích thước $T=1$.
+  - Nếu `start_pos` luôn mặc định bằng 0, RoPE sẽ tính ma trận nhúng vị trí tương ứng với vị trí $0$ (thay vì vị trí thực tế $t = \text{cached\_length}$).
+  - **Hậu quả:** Vector Query và Key của token thứ $t$ bị xoay sai góc hoàn toàn, dẫn đến tích vô hướng $Q K^T$ bị sai lệch nghiêm trọng, cơ chế chú ý bị phá hủy hoàn toàn và mô hình sinh ra chuỗi ký tự vô nghĩa (gibberish/hallucination).
+- **Cách khắc phục, tại sao khắc phục như vậy:**
+  - Trong `CausalSelfAttention.forward`, tự động trích xuất vị trí hiện tại từ bộ nhớ đệm nếu `start_pos is None`:
+    ```python
+    if start_pos is None:
+        if kv_cache is not None and kv_cache.k_cache[layer_idx] is not None:
+            start_pos = kv_cache.k_cache[layer_idx].shape[2]
+        else:
+            start_pos = 0
+    cos, sin = self.rotary_emb(seq_len=T, device=x.device, start_pos=start_pos)
+    ```
+  - Đồng thời bổ sung helper `kv_cache.get_seq_length(layer_idx)` trong `src/model/kv_cache.py` để vòng lặp `generate()` trong `GPTModel` chủ động truyền `start_pos = kv_cache.get_seq_length(0)` vào từng bước forward.
+  - **Lý do:** Đảm bảo pha góc quay $\theta_i \times (start\_pos + t)$ đồng bộ tuyệt đối giữa token mới và các token lịch sử đã lưu trong cache.
+
+### Sự cố 2: Áp dụng thừa Causal Mask khi $T=1$ gây lãng phí bộ nhớ và xung đột Shape (MED-01)
+- **File vi phạm:** [`src/model/attention.py`](../../src/model/attention.py)
+- **Vi phạm gì:** Causal mask ban đầu được tạo với shape $[T, T]$ và áp dụng vô điều kiện lên ma trận attention score `att` kích thước $[B, H, T, \text{total\_k\_len}]$.
+- **Lỗi trước vi phạm, gây ra hậu quả gì:**
+  - Ở giai đoạn Decoding với KV Cache: Query có độ dài $T=1$, nhưng Key trong cache có độ dài $\text{total\_k\_len} = L + 1$.
+  - Ma trận attention score `att` có kích thước $[B, H, 1, L + 1]$.
+  - Nếu áp dụng causal mask $[1, 1]$ hoặc $[L+1, L+1]$ sẽ dẫn đến lỗi không tương thích kích thước (`RuntimeError: The size of tensor a must match the size of tensor b`) hoặc che nhầm (mask out) các token trong quá khứ.
+- **Cách khắc phục, tại sao khắc phục như vậy:**
+  - Phân nhánh xử lý điều kiện rõ ràng: Chỉ áp dụng Causal Mask khi $T > 1$ (Prefill phase hoặc khi không dùng cache):
+    ```python
+    if kv_cache is None or T > 1:
+        q_idx = torch.arange(start_pos, start_pos + T, device=x.device).unsqueeze(1)
+        k_idx = torch.arange(total_k_len, device=x.device).unsqueeze(0)
+        causal_mask = q_idx >= k_idx
+        att = att.masked_fill(~causal_mask, float("-inf"))
+    ```
+  - Khi $T=1$ và dùng cache, Query luôn đứng ở vị trí cuối cùng nên được phép chú ý đến $100\%$ các vị trí $0 \dots L$, bỏ qua hoàn toàn bước tạo mask.
+  - **Lý do:** Vừa triệt tiêu hoàn toàn lỗi lệch shape tensor, vừa tiết kiệm đáng kể thời gian tính toán ma trận mask và phép `masked_fill` trên GPU.
+
+### Sự cố 3: Tràn Context Window vượt quá `block_size` trong vòng lặp sinh tự hồi quy (MED-02)
+- **File vi phạm:** [`src/model/transformer.py`](../../src/model/transformer.py)
+- **Vi phạm gì:** Vòng lặp `generate()` không kiểm tra điều kiện chặn trên của độ dài chuỗi tích lũy so với cấu hình phần cứng `block_size` (max context window).
+- **Lỗi trước vi phạm, gây ra hậu quả gì:**
+  - Khi `max_new_tokens` lớn hoặc prompt ban đầu dài, tổng độ dài `start_pos` vượt quá `config.block_size`.
+  - Bộ mã hóa RoPE hoặc ma trận attention bị vượt ngưỡng phân bổ bộ đệm, dẫn đến tràn VRAM (Out-Of-Memory) hoặc ném ngoại lệ ngoài biên giới hạn.
+- **Cách khắc phục, tại sao khắc phục như vậy:**
+  - Bổ sung điều kiện ngắt sớm (Early Break) trước mỗi bước decoding:
+    ```python
+    start_pos = kv_cache.get_seq_length(0)
+    if start_pos >= self.config.block_size:
+        break
+    ```
+  - Đối với chế độ không dùng cache, chủ động cắt lát cửa sổ trượt: `idx_cond = out if out.size(1) <= self.config.block_size else out[:, -self.config.block_size:]`.
+  - **Lý do:** Bảo vệ hệ thống khỏi sự cố sập bất ngờ khi sinh chuỗi dài, duy trì tính ổn định trong môi trường production.
+
+---
+
+## 7. KẾT LUẬN & SẴN SÀNG CHO BƯỚC TIẾP THEO
 
 - Module **Dynamic KV Cache** đã hoàn thành toàn diện cả về mặt thiết kế toán học, cấu trúc mã nguồn theo chuẩn Clean Architecture, và vượt qua toàn bộ các bài kiểm thử khắt khe.
 - Cấu trúc sẵn sàng được tích hợp vào kịch bản đo đạc thực nghiệm (`scripts/profile_kv.py`) và vòng lặp huấn luyện / suy luận thực tế trên môi trường GPU Cloud (Kaggle/Colab).

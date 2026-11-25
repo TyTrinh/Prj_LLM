@@ -142,3 +142,60 @@ PASS: test_save_and_load
    - `🤖 Mô hình AI thông minh 🇻🇳 🎉🚀🔥`, `∀x ∈ ℝ, ∃y: y > x` $\to$ Byte-fallback tự động chia và ghép lại chuẩn xác 100%.
 5. **Mã nguồn lập trình:**
    - Mã nguồn Python chứa các dấu phân cách, tab, space, dấu ngoặc nhọn/tròn dính liền từ khóa.
+
+---
+
+## 8. NHẬT KÝ SỰ CỐ & PHÂN TÍCH KHẮC PHỤC (POST-MORTEM & FIX LOG)
+
+Trong quá trình thiết kế, hiện thực và kiểm thử thuật toán Byte-Fallback BPE Tokenizer từ con số 0, các lỗi kỹ thuật và rủi ro rò rỉ dữ liệu đã được ghi nhận và xử lý triệt để:
+
+### Sự cố 1: Tokenizer trả về token `<|unk|>` hoặc crash khi gặp ký tự lạ, emoji đa byte (CRIT-01)
+- **File vi phạm:** [`src/tokenizer/bpe.py`](../../src/tokenizer/bpe.py)
+- **Vi phạm gì:** Cài đặt BPE ký tự truyền thống (Character-level BPE) chỉ khởi tạo từ điển dựa trên các ký tự xuất hiện trong tập huấn luyện (training corpus).
+- **Lỗi trước vi phạm, gây ra hậu quả gì:**
+  - Khi gặp ký tự ngoài tập huấn luyện (out-of-vocabulary), ví dụ: Emoji UTF-8 4-byte (`🤖`, `🇻🇳`), ký tự toán học (`∀`, `∃`), hoặc ký tự tượng hình.
+  - Tokenizer truyền thống bắt buộc phải thay thế bằng `<|unk|>` (Unknown Token) hoặc ném ngoại lệ `KeyError`.
+  - **Hậu quả:** Đánh mất hoàn toàn thông tin gốc của văn bản; chuỗi sau khi decode bị thủng lỗ chỗ (`decode(encode(text)) != text`), vi phạm nghiêm trọng tính toàn vẹn thông tin (Round-trip failure).
+- **Cách khắc phục, tại sao khắc phục như vậy:**
+  - Chuyển đổi kiến trúc sang **Byte-Fallback BPE** (tương tự LLaMA/Mistral):
+    - Đặt vùng offset 256 giá trị byte nguyên thủy (`bytes([0])` đến `bytes([255])`) tại dải ID cố định `5..260` (`BYTE_OFFSET = 5`).
+    - Khi mã hóa, mọi chuỗi văn bản UTF-8 trước hết được phân tách thành dãy byte thô.
+    - Bất kỳ ký tự nào dù hiếm gặp đến đâu, nếu không có cặp ghép (merge rule) thì vẫn luôn được phân rã về các byte đơn lẻ tương ứng mà không bao giờ sinh ra token `<|unk|>`.
+  - **Lý do:** Đảm bảo 100% tỷ lệ mã hóa và giải mã thành công không tổn thất thông tin đối với mọi chuỗi nhị phân/UTF-8 tùy ý trên thế giới.
+
+### Sự cố 2: Special Tokens bị Regex cắt vụn thành Byte thô (HIGH-01)
+- **File vi phạm:** [`src/tokenizer/bpe.py`](../../src/tokenizer/bpe.py)
+- **Vi phạm gì:** Hàm `encode()` áp dụng trực tiếp biểu thức chính quy GPT-4 Regex lên toàn bộ chuỗi đầu vào mà không cô lập Special Tokens trước.
+- **Lỗi trước vi phạm, gây ra hậu quả gì:**
+  - Chuỗi chứa thẻ đặc biệt như `<|user|>`, `<|assistant|>`, `<|eos|>` bị regex coi như các ký tự `<`, `|`, `u`, `s`, `e`, `r`, `|`, `>` thông thường.
+  - Các ký tự này bị phân rã thành byte IDs thay vì được gán ID đặc biệt chuẩn xác (`USER_ID = 3`, `ASSISTANT_ID = 4`, `EOS_ID = 2`).
+  - **Hậu quả:** Mô hình Transformer hoàn toàn không nhận diện được ranh giới lượt thoại giữa User và Assistant, cơ chế Chat Template và Target Loss Masking bị phá hủy hoàn toàn.
+- **Cách khắc phục, tại sao khắc phục như vậy:**
+  - Sử dụng cơ chế phân tách tiền xử lý bằng regex pattern nhận diện đặc quyền Special Tokens:
+    ```python
+    pattern = "(" + "|".join(re.escape(tok) for tok in self.special_tokens.keys()) + ")"
+    chunks = re.split(pattern, text)
+    ```
+  - Các phân đoạn khớp với Special Token được gán ngay ID đặc quyền cố định; các phân đoạn văn bản thường còn lại mới được đưa qua luồng mã hóa BPE Byte-Fallback.
+  - **Lý do:** Tách biệt triệt để không gian tín hiệu điều khiển hội thoại (control tokens) và không gian ngữ nghĩa văn bản (payload tokens).
+
+### Sự cố 3: Lỗi ghép nối ký tự tiếng Việt đa byte khi Decode từng phần (MED-01)
+- **File vi phạm:** [`src/tokenizer/bpe.py`](../../src/tokenizer/bpe.py)
+- **Vi phạm gì:** Trong hàm `decode()`, từng token ID được giải mã trực tiếp thành string bằng `.decode("utf-8")` rồi cộng chuỗi lại: `text += chunk.decode('utf-8')`.
+- **Lỗi trước vi phạm, gây ra hậu quả gì:**
+  - Ký tự tiếng Việt có dấu (như `ệ`, `đ`, `ế`) trong bảng mã UTF-8 gồm từ 2 đến 3 bytes.
+  - Trong quá trình mã hóa BPE Byte-Fallback, một ký tự có thể bị chia tách: byte thứ nhất nằm ở token trước, byte thứ hai và ba nằm ở token sau.
+  - Khi decode từng token riêng lẻ, việc gọi `.decode("utf-8")` trên 1 byte cụt sẽ ném ngoại lệ `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe1 in position 0: unexpected end of data`.
+  - Nếu dùng `errors="replace"`, văn bản tiếng Việt sẽ bị biến dạng thành các ký tự rác `` (mojibake).
+- **Cách khắc phục, tại sao khắc phục như vậy:**
+  - Không giải mã chuỗi từng phần. Toàn bộ các mẩu byte của các token được gom lại vào một mảng byte nhị phân duy nhất bằng `b"".join(byte_chunks)` trước khi thực hiện đúng một lần giải mã duy nhất:
+    ```python
+    return full_bytes.decode("utf-8", errors="replace")
+    ```
+  - **Lý do:** Ghép nối đầy đủ các byte phân mảnh của các ký tự UTF-8 đa byte trước khi biên dịch, đảm bảo tiếng Việt có dấu được tái tạo trọn vẹn 100%.
+
+---
+
+## 9. KẾT LUẬN & ĐỒNG BỘ TOÀN HỆ THỐNG
+
+- Tokenizer BPE Byte-Fallback đã hoàn thành xuất sắc toàn bộ các chỉ tiêu kỹ thuật, đảm bảo không phụ thuộc thư viện ngoài (`tiktoken`, `transformers`), không bao giờ rò rỉ mã lỗi và sẵn sàng phục vụ các giai đoạn Pre-training, SFT và DPO.

@@ -74,3 +74,40 @@ tests/test_lora_freeze.py::test_merge_and_unload_zero_latency PASSED     [ 80%]
 tests/test_lora_freeze.py::test_lora_save_and_load_weights PASSED        [100%]
 ============================== 5 passed in 5.45s ==============================
 ```
+
+---
+
+## 4. Nhật Ký Sự Cố & Phân Tích Khắc Phục (Post-Mortem & Fix Log)
+
+### Sự cố 1: `lora_dropout` bị bỏ qua âm thầm trong `LoRAManager.inject_lora` (LOW-01)
+- **File vi phạm:** [`src/peft/lora_manager.py`](../../src/peft/lora_manager.py#L35-L50)
+- **Vi phạm gì:** Hàm `inject_lora` không nhận tham số `lora_dropout`, luôn gán mặc định `0.0`.
+- **Lỗi trước vi phạm & Hậu quả:**
+  - Cấu hình hệ thống `LoRAConfig.lora_dropout = 0.05` bị vô hiệu hóa hoàn toàn trong quá trình inject adapter.
+  - Nhánh LoRA không có cơ chế dropout chống co-adaptation giữa ma trận A và B khi huấn luyện.
+- **Cách khắc phục & Lý do:**
+  - Bổ sung tham số `lora_dropout: float = 0.0` vào `LoRAManager.inject_lora` và truyền trực tiếp vào hàm khởi tạo `LoRALinear(curr_layer, r=r, lora_alpha=lora_alpha, lora_dropout=lora_dropout)`.
+  - Giúp tôn trọng triệt để cấu hình siêu tham số của người dùng.
+
+### Sự cố 2: Lỗ hổng bảo mật `weights_only=False` khi nạp LoRA weights (MED-02)
+- **File vi phạm:** [`src/peft/lora_manager.py`](../../src/peft/lora_manager.py#L118)
+- **Vi phạm gì:** Sử dụng `torch.load(..., weights_only=False)`.
+- **Lỗi trước vi phạm & Hậu quả:**
+  - Cho phép thực thi mã tùy ý (arbitrary code execution via pickle deserialization).
+  - Vi phạm tiêu chuẩn an toàn kỹ thuật của PyTorch.
+- **Cách khắc phục & Lý do:**
+  - Chuyển thành `weights_only=True`:
+    ```python
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    ```
+  - Đảm bảo an toàn tuyệt đối khi nạp các file trọng số adapter `.pt`.
+
+### Sự cố 3: Không nhất quán định dạng lưu Adapter giữa `CheckpointManager` và `LoRAManager` (MED-04)
+- **File vi phạm:** [`src/utils/checkpoint.py`](../../src/utils/checkpoint.py#L135-L147)
+- **Vi phạm gì:** `CheckpointManager.save_lora_adapter` lưu raw state dict, trong khi `LoRAManager.save_lora_weights` lưu dict có wrapper `{"lora_state_dict": ..., "metadata": ...}`.
+- **Lỗi trước vi phạm & Hậu quả:**
+  - Khi một module lưu bằng hàm này nhưng nạp bằng hàm kia có thể gây lỗi `KeyError` hoặc mất toàn bộ metadata (rank, alpha, val_loss).
+- **Cách khắc phục & Lý do:**
+  - Thống nhất định dạng lưu wrapper `{"lora_state_dict": ..., "metadata": ...}` trên cả hai module.
+  - Cập nhật hàm `load_lora_adapter` hỗ trợ fallback nạp tương thích ngược cả file cũ lẫn file mới.
+

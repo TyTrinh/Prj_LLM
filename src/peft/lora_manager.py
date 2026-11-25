@@ -36,16 +36,27 @@ class LoRAManager:
         model: nn.Module,
         r: int = 8,
         lora_alpha: float = 16.0,
+        lora_dropout: float = 0.0,
         target_modules: List[str] = ["q_proj", "v_proj"],
     ) -> nn.Module:
-        """Duyệt cây module và thay thế các Linear layer chỉ định bằng LoRALinear."""
+        """
+        Duyệt cây module và thay thế các Linear layer chỉ định bằng LoRALinear.
+        Trả về model (ghi nhận logging số lượng injected layers).
+        """
+        injected_count = 0
         for name, module in model.named_modules():
             for target in target_modules:
                 if hasattr(module, target):
                     curr_layer = getattr(module, target)
                     if isinstance(curr_layer, nn.Linear) and not isinstance(curr_layer, LoRALinear):
-                        lora_layer = LoRALinear(curr_layer, r=r, lora_alpha=lora_alpha)
+                        lora_layer = LoRALinear(
+                            curr_layer,
+                            r=r,
+                            lora_alpha=lora_alpha,
+                            lora_dropout=lora_dropout,
+                        )
                         setattr(module, target, lora_layer)
+                        injected_count += 1
         return model
 
     @staticmethod
@@ -104,7 +115,7 @@ class LoRAManager:
         if not os.path.exists(path):
             raise FileNotFoundError(f"LoRA adapter file not found at: {path}")
 
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
         lora_state_dict = checkpoint.get("lora_state_dict", checkpoint)
 
         model_params = dict(model.named_parameters())
