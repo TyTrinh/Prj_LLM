@@ -93,15 +93,23 @@ class CheckpointManager:
         if scaler is not None and checkpoint.get("scaler_state_dict") is not None:
             scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
-        # Khôi phục trạng thái ngẫu nhiên nếu có
-        if "rng_state" in checkpoint and checkpoint["rng_state"] is not None:
-            torch.set_rng_state(checkpoint["rng_state"])
-        if (
-            torch.cuda.is_available()
-            and device.startswith("cuda")
-            and checkpoint.get("cuda_rng_state") is not None
-        ):
-            torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
+        # Khôi phục trạng thái ngẫu nhiên an toàn (chuyển sang ByteTensor và CPU)
+        try:
+            if "rng_state" in checkpoint and checkpoint["rng_state"] is not None:
+                rng = checkpoint["rng_state"]
+                if isinstance(rng, torch.Tensor):
+                    torch.set_rng_state(rng.to(dtype=torch.uint8, device="cpu"))
+            if (
+                torch.cuda.is_available()
+                and device.startswith("cuda")
+                and checkpoint.get("cuda_rng_state") is not None
+            ):
+                cuda_rng = checkpoint["cuda_rng_state"]
+                if isinstance(cuda_rng, torch.Tensor):
+                    torch.cuda.set_rng_state(cuda_rng.to(dtype=torch.uint8, device="cpu"))
+        except Exception as e:
+            # Nếu RNG state không tương thích giữa các phiên bản PyTorch, bỏ qua mà không làm crash training
+            print(f"[Checkpoint Info] Bỏ qua khôi phục RNG state do khác biệt môi trường ({e}).")
 
         return {
             "step": checkpoint.get("step", 0),

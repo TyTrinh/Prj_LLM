@@ -49,12 +49,12 @@
 ## Giai đoạn 3: Tự code LoRA & Huấn luyện SFT
 
 - **Lập trình module LoRA từ số 0**
-    - [ ]  Tạo lớp `LoRALinear(nn.Module)` bọc lấy lớp `nn.Linear` gốc, chứa 2 ma trận hạng thấp $A \in \mathbb{R}^{r \times d_{\text{in}}}$ (khởi tạo Kaiming/Gaussian) và $B \in \mathbb{R}^{d_{\text{out}} \times r}$ (khởi tạo toàn số `0`)
-    - [ ]  Cài đặt công thức tính đầu ra: $h = W_0 x + \frac{\alpha}{r} B A x$
-    - [ ]  Viết hàm tiện ích `inject_lora(model, r, alpha)` tự động duyệt qua tất cả các tầng Attention và thay thế ma trận chiếu $W_q, W_v$ bằng `LoRALinear`
-    - [ ]  Viết hàm `set_lora_enabled(model, enabled: bool)` để bật/tắt nhánh LoRA linh hoạt (phục vụ giai đoạn DPO sau này)
-    - [ ]  **[CẢI TIẾN 1 - 10% điểm]** Hàm `merge_and_unload()` gập trọng số cho zero-latency inference
-    - [ ]  Đóng băng toàn bộ trọng số gốc (`requires_grad = False`), chỉ mở khóa tham số của `LoRALinear` và kiểm tra tỷ lệ tham số trainable (thường < 3%)
+    - [x]  Tạo lớp `LoRALinear(nn.Module)` bọc lấy lớp `nn.Linear` gốc, chứa 2 ma trận hạng thấp $A \in \mathbb{R}^{r \times d_{\text{in}}}$ (khởi tạo Kaiming/Gaussian) và $B \in \mathbb{R}^{d_{\text{out}} \times r}$ (khởi tạo toàn số `0`)
+    - [x]  Cài đặt công thức tính đầu ra: $h = W_0 x + \frac{\alpha}{r} B A x$
+    - [x]  Viết hàm tiện ích `inject_lora(model, r, alpha)` tự động duyệt qua tất cả các tầng Attention và thay thế ma trận chiếu $W_q, W_v$ bằng `LoRALinear`
+    - [x]  Viết hàm `set_lora_enabled(model, enabled: bool)` để bật/tắt nhánh LoRA linh hoạt (phục vụ giai đoạn DPO sau này)
+    - [x]  **[CẢI TIẾN 1 - 10% điểm]** Hàm `merge_and_unload()` gập trọng số cho zero-latency inference
+    - [x]  Đóng băng toàn bộ trọng số gốc (`requires_grad = False`), chỉ mở khóa tham số của `LoRALinear` và kiểm tra tỷ lệ tham số trainable (thường < 3%)
 - **Huấn luyện SFT (Supervised Fine-Tuning)**
     - [ ]  Tải tập `Alpaca-Cleaned`, định dạng lại theo Chat Template thống nhất: `<|user|>{prompt}<|assistant|>{response}<|eos|>`
     - [ ]  **Tạo Loss Mask (Quan trọng):** Gán nhãn `-100` cho toàn bộ phần `<|user|>{prompt}` để hàm Cross-Entropy Loss chỉ tính lỗi trên câu trả lời của Assistant (không ép mô hình học thuộc lòng câu hỏi)
