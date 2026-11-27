@@ -4,18 +4,20 @@ FILE: src/tokenizer/bpe.py
 MODULE: src.tokenizer.bpe
 RESPONSIBILITY:
     - Thuật toán Byte-Pair Encoding (BPE) với cơ chế Byte-Fallback viết từ số 0.
-    - Cấu trúc không gian từ điển (Vocab 32K):
+    - Cấu trúc không gian từ điển (Vocab 8K - 8192 tokens):
         + IDs 0..4: Special Tokens (<|pad|>=0, <|bos|>=1, <|eos|>=2, <|user|>=3, <|assistant|>=4)
         + IDs 5..260: 256 Raw Bytes (0x00..0xFF) để đảm bảo Byte-Fallback không bao giờ OOV/UNK
-        + IDs 261..31999: Các token ghép cặp (Merges)
-    - Tối ưu hóa huấn luyện BPE:
-        + Tiền phân tách bằng GPT-4 Regex với thư viện `regex` (Unicode properties \\p{L}, \\p{N})
-        + Duyệt theo bảng tần suất từ (word_counts) kết hợp Inverted Index để tránh bottleneck
-    - Đầy đủ hàm encode, decode, save, load và round-trip test.
+        + IDs 261..8191: 7931 token ghép cặp (Merges)
+    - Tiền phân tách bằng GPT-4 Regex với thư viện `regex` (Unicode properties \\p{L}, \\p{N})
+    - Duyệt theo bảng tần suất từ (word_counts) kết hợp Inverted Index để tối ưu tốc độ huấn luyện.
+    - Đầy đủ hàm encode, decode, save, load với kiểm tra toàn vẹn chặt chẽ (Integrity Validation).
+    - get_fingerprint() băm toàn vẹn: regex pattern, toàn bộ vocab, toàn bộ merges, special tokens.
 ==============================================================================
 """
 
+import hashlib
 import json
+import os
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 import regex as re
@@ -41,10 +43,10 @@ BYTE_OFFSET = NUM_SPECIAL               # ID 5 đến 260 cho 256 bytes
 
 class BytePairTokenizer:
     """
-    Tokenizer BPE với Byte-fallback và không gian Vocab 32K.
+    Tokenizer BPE với Byte-fallback và không gian Vocab 8K (8192 tokens).
     """
 
-    def __init__(self, vocab_size: int = 32000):
+    def __init__(self, vocab_size: int = 8192):
         if vocab_size < BYTE_OFFSET + 256:
             raise ValueError(f"vocab_size phải lớn hơn ít nhất {BYTE_OFFSET + 256} để chứa Special tokens và 256 bytes.")
         self.vocab_size = vocab_size
@@ -105,7 +107,6 @@ class BytePairTokenizer:
             if not text:
                 continue
 
-            # Tách riêng special tokens ra nếu có trong text
             if special_regex:
                 chunks = special_regex.split(text)
             else:
@@ -119,11 +120,10 @@ class BytePairTokenizer:
                     word_bytes = match.group(0).encode("utf-8")
                     if not word_bytes:
                         continue
-                    # Biểu diễn từ thành tuple các byte-token IDs
                     token_tuple = tuple(BYTE_OFFSET + b for b in word_bytes)
                     word_counts[token_tuple] += 1
 
-        # 2. Xây dựng Inverted Index: pair -> Set[word_tuple] và pair_counts: pair -> int
+        # 2. Xây dựng Inverted Index
         pair_counts: Dict[Tuple[int, int], int] = defaultdict(int)
         where_pair: Dict[Tuple[int, int], Set[Tuple[int, ...]]] = defaultdict(set)
 
@@ -144,29 +144,24 @@ class BytePairTokenizer:
             if not pair_counts:
                 break
 
-            # Lấy cặp có tần suất xuất hiện cao nhất
             best_pair = max(pair_counts, key=pair_counts.get)
             if pair_counts[best_pair] <= 0:
                 break
 
-            # Gán ID mới
             new_id = next_id
             next_id += 1
             self.merges[best_pair] = new_id
 
-            # Tạo byte representation cho token mới
             merged_bytes = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
             self.vocab[new_id] = merged_bytes
             self.inverse_vocab[merged_bytes] = new_id
 
-            # Cập nhật cục bộ chỉ trên các word chứa best_pair
             words_to_update = list(where_pair[best_pair])
             p0, p1 = best_pair
 
             for old_word in words_to_update:
                 count = word_counts.pop(old_word)
 
-                # Giảm thống kê của các cặp cũ trong old_word
                 for i in range(len(old_word) - 1):
                     pair = (old_word[i], old_word[i + 1])
                     pair_counts[pair] -= count
@@ -176,7 +171,6 @@ class BytePairTokenizer:
                     if not where_pair[pair]:
                         where_pair.pop(pair, None)
 
-                # Tạo new_word bằng cách thay thế cặp (p0, p1) bằng new_id
                 new_word_list = []
                 i = 0
                 while i < len(old_word):
@@ -188,10 +182,8 @@ class BytePairTokenizer:
                         i += 1
                 new_word = tuple(new_word_list)
 
-                # Cập nhật word_counts với new_word
                 word_counts[new_word] += count
 
-                # Thêm thống kê của các cặp mới trong new_word
                 for i in range(len(new_word) - 1):
                     pair = (new_word[i], new_word[i + 1])
                     pair_counts[pair] += count
@@ -208,11 +200,9 @@ class BytePairTokenizer:
         if not chunk_bytes:
             return []
 
-        # Chuyển từng byte sang raw byte id (offset 5)
         tokens = [BYTE_OFFSET + b for b in chunk_bytes]
 
         while len(tokens) >= 2:
-            # Tìm cặp liền kề có rank thấp nhất (được merge sớm nhất)
             stats = {}
             for i in range(len(tokens) - 1):
                 pair = (tokens[i], tokens[i + 1])
@@ -225,7 +215,6 @@ class BytePairTokenizer:
             best_pair = min(stats, key=stats.get)
             new_id = self.merges[best_pair]
 
-            # Merge cặp đó
             new_tokens = []
             i = 0
             while i < len(tokens):
@@ -250,7 +239,6 @@ class BytePairTokenizer:
             return []
 
         if allowed_special is None:
-            # Mặc định cho phép tất cả các special tokens đã đăng ký
             allowed_special = set(self.special_tokens.keys())
 
         special_regex = self._get_special_tokens_regex()
@@ -267,7 +255,6 @@ class BytePairTokenizer:
                 if part in allowed_special:
                     ids.append(self.special_tokens[part])
                 else:
-                    # Nếu không cho phép special token, encode như text thô
                     for match in COMPILED_PATTERN.finditer(part):
                         ids.extend(self._encode_chunk(match.group(0).encode("utf-8")))
             else:
@@ -281,7 +268,7 @@ class BytePairTokenizer:
         Giải mã danh sách token IDs trở lại thành chuỗi UTF-8:
         - Nối toàn bộ byte của các token IDs
         - Special tokens được giữ nguyên dạng chuỗi
-        - Sử dụng errors="replace" để đảm bảo tính an toàn nếu gặp byte lẻ.
+        - Kiểm tra nghiêm ngặt tính hợp lệ của token ID: Ném lỗi nếu gặp ID ngoài vocab.
         """
         if not ids:
             return ""
@@ -298,58 +285,161 @@ class BytePairTokenizer:
             elif token_id in self.vocab:
                 byte_buffer.extend(self.vocab[token_id])
             else:
-                # Trường hợp ID ngoài vocab (không hợp lệ)
-                pass
+                # Tuân thủ Constitution Điều 8: Không bao giờ nuốt lỗi âm thầm (pass)
+                raise ValueError(
+                    f"Token ID không hợp lệ: {token_id}. "
+                    f"ID này nằm ngoài phạm vi không gian từ điển [0, {self.vocab_size - 1}]."
+                )
 
         if byte_buffer:
             parts.append(byte_buffer.decode("utf-8", errors="replace"))
 
         return "".join(parts)
 
-    def save(self, vocab_file: str, merges_file: str) -> None:
+    def _resolve_paths(self, path_or_vocab: str, merges_file: Optional[str] = None) -> Tuple[str, str]:
+        """Hỗ trợ cả 2 dạng: truyền 1 thư mục (folder) hoặc truyền 2 file riêng rẽ."""
+        if merges_file is None:
+            if os.path.isdir(path_or_vocab) or not path_or_vocab.endswith(".json"):
+                vocab_file = os.path.join(path_or_vocab, "vocab.json")
+                merges_path = os.path.join(path_or_vocab, "merges.txt")
+                return vocab_file, merges_path
+            else:
+                raise ValueError("Cần cung cấp cả vocab_file và merges_file hoặc 1 đường dẫn thư mục chứa chúng.")
+        return path_or_vocab, merges_file
+
+    def save(self, path_or_vocab: str, merges_file: Optional[str] = None) -> None:
         """Lưu vocab.json và merges.txt."""
-        # Lưu vocab: token_id -> hex-string để biểu diễn an toàn mọi bytes
+        vocab_path, merges_path = self._resolve_paths(path_or_vocab, merges_file)
+        os.makedirs(os.path.dirname(os.path.abspath(vocab_path)), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(merges_path)), exist_ok=True)
+
         serializable_vocab = {
             token_id: token_bytes.hex()
             for token_id, token_bytes in self.vocab.items()
         }
-        with open(vocab_file, "w", encoding="utf-8") as f:
+        with open(vocab_path, "w", encoding="utf-8") as f:
             json.dump({
                 "vocab_size": self.vocab_size,
-                "vocab": serializable_vocab,
+                "split_pattern": GPT4_SPLIT_PATTERN,
                 "special_tokens": self.special_tokens,
+                "vocab": serializable_vocab,
             }, f, indent=2, ensure_ascii=False)
 
-        # Lưu merges: (id1, id2) -> new_id
-        with open(merges_file, "w", encoding="utf-8") as f:
-            for (p0, p1), new_id in self.merges.items():
+        with open(merges_path, "w", encoding="utf-8") as f:
+            for (p0, p1), new_id in sorted(self.merges.items(), key=lambda x: x[1]):
                 f.write(f"{p0} {p1} {new_id}\n")
 
-    def load(self, vocab_file: str, merges_file: str) -> None:
-        """Tải vocab.json và merges.txt."""
-        with open(vocab_file, "r", encoding="utf-8") as f:
+    def save_vocab(self, path_or_vocab: str, merges_file: Optional[str] = None) -> None:
+        """Alias cho phương thức save()."""
+        self.save(path_or_vocab, merges_file)
+
+    def load(self, path_or_vocab: str, merges_file: Optional[str] = None) -> None:
+        """
+        Tải và kiểm định tính toàn vẹn tuyệt đối của vocab.json và merges.txt.
+        Ném ValueError nếu phát hiện dữ liệu bị rác, khuyết thiếu hoặc không nhất quán.
+        """
+        vocab_path, merges_path = self._resolve_paths(path_or_vocab, merges_file)
+
+        if not os.path.exists(vocab_path):
+            raise FileNotFoundError(f"Không tìm thấy file từ điển tại: {vocab_path}")
+        if not os.path.exists(merges_path):
+            raise FileNotFoundError(f"Không tìm thấy file merges tại: {merges_path}")
+
+        with open(vocab_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         self.vocab_size = data["vocab_size"]
         self.special_tokens = data.get("special_tokens", dict(SPECIAL_TOKENS_MAP))
         self.inverse_special_tokens = {v: k for k, v in self.special_tokens.items()}
 
+        raw_vocab = data["vocab"]
         self.vocab = {
             int(token_id): bytes.fromhex(hex_str)
-            for token_id, hex_str in data["vocab"].items()
+            for token_id, hex_str in raw_vocab.items()
         }
         self.inverse_vocab = {v: k for k, v in self.vocab.items()}
 
+        # 1. Kiểm tra tính liên tục tuyệt đối của vocab: từ 0 đến vocab_size - 1
+        expected_ids = set(range(self.vocab_size))
+        actual_ids = set(self.vocab.keys())
+        if actual_ids != expected_ids:
+            missing = expected_ids - actual_ids
+            extra = actual_ids - expected_ids
+            raise ValueError(
+                f"Lỗi toàn vẹn Vocab! Kích thước kỳ vọng: {self.vocab_size}. "
+                f"Thiếu {len(missing)} IDs, dư {len(extra)} IDs."
+            )
+
+        # 2. Tải và kiểm tra tính toàn vẹn của merges.txt
         self.merges.clear()
-        with open(merges_file, "r", encoding="utf-8") as f:
-            for line in f:
+        seen_merge_ids = set()
+
+        with open(merges_path, "r", encoding="utf-8") as f:
+            for line_idx, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
                 parts = line.split()
-                if len(parts) == 3:
+                if len(parts) != 3:
+                    raise ValueError(f"Dòng {line_idx} trong {merges_path} sai định dạng: '{line}'. Phải có đúng 3 thành phần.")
+
+                try:
                     p0, p1, new_id = int(parts[0]), int(parts[1]), int(parts[2])
-                    self.merges[(p0, p1)] = new_id
+                except ValueError:
+                    raise ValueError(f"Dòng {line_idx} chứa ID không phải số nguyên: '{line}'")
+
+                # Kiểm tra tham chiếu ID hợp lệ
+                if p0 not in self.vocab or p1 not in self.vocab:
+                    raise ValueError(f"Merge rule ({p0}, {p1}) tham chiếu đến ID không tồn tại trong vocab!")
+                if new_id not in self.vocab:
+                    raise ValueError(f"Merged ID {new_id} không tồn tại trong vocab!")
+                if new_id in seen_merge_ids:
+                    raise ValueError(f"Merged ID {new_id} bị trùng lặp trong merges.txt!")
+
+                seen_merge_ids.add(new_id)
+                self.merges[(p0, p1)] = new_id
+
+        # 3. Kiểm tra tính nhất quán giữa số merge và vocab
+        expected_merges = self.vocab_size - (BYTE_OFFSET + 256)
+        if len(self.merges) != expected_merges:
+            raise ValueError(
+                f"Số merge rules trong merges.txt ({len(self.merges)}) "
+                f"không khớp với số token merge dự kiến ({expected_merges})!"
+            )
+
+    def load_vocab(self, path_or_vocab: str, merges_file: Optional[str] = None) -> None:
+        """Alias cho phương thức load()."""
+        self.load(path_or_vocab, merges_file)
+
+    def get_fingerprint(self) -> str:
+        """
+        Tính SHA256 Fingerprint toàn diện bảo đảm 100% tính toàn vẹn của artifact:
+        - Chuỗi regex splitting pattern
+        - Ánh xạ Special tokens
+        - Toàn bộ từ điển vocab (được sắp xếp theo ID từ 0 đến vocab_size-1)
+        - Toàn bộ các quy tắc merge (theo đúng thứ tự rank)
+        """
+        h = hashlib.sha256()
+
+        # 1. Băm regex split pattern
+        h.update(f"regex:{GPT4_SPLIT_PATTERN};".encode("utf-8"))
+
+        # 2. Băm special tokens
+        for k, v in sorted(self.special_tokens.items()):
+            h.update(f"special:{k}->{v};".encode("utf-8"))
+
+        # 3. Băm toàn bộ vocab theo ID tăng dần
+        for token_id in range(self.vocab_size):
+            if token_id in self.vocab:
+                h.update(f"id:{token_id}=".encode("utf-8"))
+                h.update(self.vocab[token_id])
+                h.update(b";")
+
+        # 4. Băm toàn bộ merges theo rank
+        for pair, mid in sorted(self.merges.items(), key=lambda x: x[1]):
+            h.update(f"merge:{pair[0]}+{pair[1]}->{mid};".encode("utf-8"))
+
+        return h.hexdigest()
 
     def apply_chat_template(
         self,
@@ -380,4 +470,3 @@ class BytePairTokenizer:
         if tokenize:
             return self.encode(formatted)
         return formatted
-

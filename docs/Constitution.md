@@ -248,51 +248,22 @@ Avoid excessive comments that make the code harder to read.
 
 # IV. TESTING AND VERIFICATION
 
-## 13. Testing Is Mandatory
+## 13. Testing / Test Cases Policy
 
-After implementation, the Agent MUST verify the affected functionality.
-
-Depending on the scope, verification should include:
-
-- Syntax and compilation checks.
-- Static analysis and linting.
-- Unit tests.
-- Integration tests.
-- API and interface compatibility.
-- Regression tests.
-- Error-handling tests.
-- Boundary and edge-case tests.
-- Performance checks when performance is part of the requirement.
-
-Do not claim that a feature works merely because the code was successfully written.
+- Không bắt buộc phải chạy các bộ kiểm thử tự động (test cases/unit tests/integration tests) sau mỗi lần triển khai mã nguồn, trừ khi người dùng có yêu cầu cụ thể.
+- Việc kiểm tra tính đúng đắn có thể tập trung vào kiểm tra cú pháp, logic mã nguồn và kết quả thực thi thực tế khi cần thiết.
+- Không tự ý thêm bước bắt buộc chạy test suite nếu người dùng không yêu cầu.
 
 ## 14. Preserve Existing Tests
 
-- Do not delete or weaken existing tests merely to make the test suite pass.
-- Do not modify expected test results without understanding their original purpose.
-- If existing tests fail after implementation, investigate the cause.
-- Distinguish pre-existing failures from newly introduced failures.
-- Report tests that could not be executed and explain why.
+- Giữ nguyên các file kiểm thử hiện có của dự án để phục vụ tham khảo hoặc chạy kiểm tra khi cần.
+- Không sửa đổi hoặc xóa các test case hiện có trừ khi có yêu cầu tái cấu trúc rõ ràng từ người dùng.
 
 ## 15. Evidence-Based Verification
 
-Every completion report must distinguish:
-
-- Verified successfully.
-- Verified with limitations.
-- Not verified.
-- Failed.
-
-Never fabricate:
-
-- Test results.
-- Execution logs.
-- Performance measurements.
-- Benchmark results.
-- Screenshots.
-- Successful deployment claims.
-
-All verification claims must be supported by actual execution results or other identifiable evidence.
+- Báo cáo rõ ràng trạng thái thực hiện dựa trên các thay đổi mã nguồn thực tế.
+- Phân biệt rõ giữa những gì đã thực hiện, những gì đã kiểm tra cú pháp/logic và những gì chưa qua kiểm thử thực tế.
+- Tuyệt đối không ngụy tạo kết quả hoặc log thực thi.
 
 ---
 
@@ -534,11 +505,9 @@ Every implementation task must follow this lifecycle.
 
 ### Phase 5 — Verification
 
-- Execute appropriate tests.
-- Inspect the resulting changes.
-- Verify that existing functionality remains intact.
-- Report actual results.
-- Identify unresolved issues.
+- Rà soát mã nguồn đã chỉnh sửa hoặc tạo mới.
+- Kiểm tra tính nhất quán về logic và cú pháp (không bắt buộc chạy test cases tự động).
+- Báo cáo kết quả và các điểm lưu ý kỹ thuật.
 
 ### Phase 6 — User Review
 
