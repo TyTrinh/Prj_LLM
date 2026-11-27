@@ -126,11 +126,32 @@ Hệ thống thiết kế lớp `KVCache` quản lý danh sách các tensor `(k_
 
 ### 4.2. Chiến lược Tối ưu hóa & Huấn luyện
 1. **Mixed Precision (`torch.amp.autocast(dtype=torch.float16)`):** Giảm dung lượng VRAM tính toán kích hoạt xuống 50%, tăng tốc độ tính toán qua Tensor Cores.
-2. **Gradient Accumulation (4 steps):** Kích thước micro-batch $B=32$, tích lũy qua 4 bước tạo thành effective batch size $32 \times 4 = 128$ chuỗi ($65,536$ tokens/step) giúp ước lượng gradient ổn định mà không tràn bộ nhớ.
-3. **Cosine Learning Rate Scheduler with Warmup:**
-   - 200 steps đầu tiên: Tăng tuyến tính từ $0$ lên $5 \times 10^{-4}$ (Linear Warmup) giúp ổn định trọng số ban đầu.
-   - Sau đó giảm dần theo đường cong hàm Cosine về $5 \times 10^{-5}$ (Decay).
+2. **Gradient Accumulation (4 - 8 steps):** Tích lũy gradient tạo thành effective batch size 64 - 128 chuỗi giúp ước lượng gradient ổn định mà không tràn bộ nhớ.
+3. **Chiến lược Lịch trình Tốc độ học WSD (Warmup - Stable - Decay):**
+   Thay vì sử dụng Cosine Decay truyền thống (vốn làm suy giảm learning rate từ rất sớm và "đóng băng" khả năng tiếp thu tri thức mới của mô hình), dự án áp dụng **WSD Scheduler** theo chuẩn kiến trúc LLM hiện đại (MiniCPM, DeepSeek, Llama-3 Annealing):
+   - **Giai đoạn 1 - Warmup Phase (1% - 5% tổng số bước, mặc định 3%):**
+     Tăng tuyến tính learning rate từ $0$ lên giá trị cực đại $\eta_{\max}$:
+     $$\eta(t) = \eta_{\max} \cdot \frac{t + 1}{T_{\text{warmup}}}, \quad \forall t \in [0, T_{\text{warmup}})$$
+   - **Giai đoạn 2 - Stable Phase (85% - 90% tổng thời gian huấn luyện):**
+     Duy trì tốc độ học ổn định tuyệt đối ở mức cực đại:
+     $$\eta(t) = \eta_{\max}, \quad \forall t \in [T_{\text{warmup}}, T_{\text{stable\_end}})$$
+     *Ý nghĩa kỹ thuật:* Cho phép mô hình liên tục khám phá không gian tham số và liên tục hấp thụ khối lượng dữ liệu khổng lồ mà không bị triệt tiêu gradient quá sớm.
+   - **Giai đoạn 3 - Decay Phase (10% cuối cùng - Data Annealing):**
+     Khi chuẩn bị chốt trọng số hoặc kích hoạt giai đoạn nạp dữ liệu chất lượng cao (High-quality Domain Data Annealing), hạ learning rate nhanh chóng (theo hàm Cosine dốc) về $\eta_{\min} = 0.1 \eta_{\max}$:
+     $$p = \frac{t - T_{\text{stable\_end}}}{T_{\max} - T_{\text{stable\_end}}}, \quad \eta(t) = \eta_{\min} + \frac{1}{2} (1 + \cos(\pi p))(\eta_{\max} - \eta_{\min})$$
 4. **Gradient Clipping (1.0):** Cắt tỉa chuẩn vector đạo hàm $\|g\|_2 \le 1.0$ ngăn ngừa bùng nổ gradient (gradient exploding).
+5. **Chiến Lược Ứng Cứu Checkpoint Rollback Tự Động (Auto-Rollback Strategy):**
+   Trong quá trình tiền huấn luyện trên các cụm GPU lớn, các bất ổn số học (loss spike, gradient explosion do batch dữ liệu chứa chuỗi ngoại lai) có thể phá hủy hoàn toàn trọng số mô hình. Hệ thống tích hợp `CheckpointRollbackManager` thực thi quy trình ứng cứu 4 bước:
+   - **Bước 1 - Phát hiện ngưỡng bất thường:**
+     Liên tục tính chuẩn Frobenius của vector gradient $\|\nabla_\theta \mathcal{L}\|_2$ và duy trì đường trung bình động hàm mũ (Exponential Moving Average - EMA). Khi phát hiện điều kiện:
+     $$\|\nabla_\theta \mathcal{L}\|_2 > \text{Threshold} \times \text{EMA}(\|\nabla_\theta \mathcal{L}\|_2) \quad \text{hoặc} \quad \text{Loss} \in \{\text{NaN}, \text{Inf}\}$$
+     Hệ thống lập tức chặn lệnh cập nhật optimizer (`zero_grad()`) và tạm dừng nạp batch tiếp theo.
+   - **Bước 2 - Kích hoạt Rollback:**
+     Tự động khôi phục toàn bộ trọng số mô hình, trạng thái momentum/variance của AdamW và scaler về Checkpoint an toàn gần nhất (`last_checkpoint.pt` hoặc `step_*.pt`).
+   - **Bước 3 - Cô lập và loại bỏ batch lỗi:**
+     Bỏ qua (skip) hoàn toàn batch dữ liệu gây bất ổn để tránh làm hỏng mô hình lần thứ hai.
+   - **Bước 4 - Điều chỉnh siêu tham số (Cool-down Phase):**
+     Tạm thời giảm Learning Rate $20\%$ ($\eta_{\text{temp}} = 0.8 \times \eta_{\text{base}}$) và siết chặt Gradient Clipping về $0.5 \times \text{ClipMax}$ trong $50$ steps hồi phục trước khi nới lỏng trở lại bình thường.
 
 ---
 
@@ -139,17 +160,30 @@ Hệ thống thiết kế lớp `KVCache` quản lý danh sách các tensor `(k_
 Hệ thống thiết lập ma trận đo đạc thực nghiệm tại 4 mốc ngữ cảnh:  
 $$L \in \{128, 512, 1024, 2048\}$$
 
-### Bảng Chỉ tiêu Định lượng So sánh:
-| Mốc ngữ cảnh ($L$) | Chế độ Cache | Tốc độ (Tokens/s) | TTFT (ms) | TPOT (ms) | Peak VRAM (MB) | Tăng tốc (Speedup) |
+### Bảng Chỉ tiêu Định lượng So sánh Thực nghiệm:
+> Dữ liệu được đo đạc định lượng tự động qua module `src/utils/profiler.py` với $L \in \{128, 512, 1024, 2048\}$, sinh $N=32$ tokens mới (chi tiết xem tại [`docs/figures/kv_cache_metrics.json`](file:///e:/Python/DUT_AI/A-Module%20LLM/Prj_LLM/docs/figures/kv_cache_metrics.json)):
+
+| Mốc ngữ cảnh ($L$) | Chế độ Cache | Tốc độ (Tokens/s) | TTFT (ms) | TPOT (ms) | Peak VRAM (MB) | Gia tốc (Speedup) |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **$L=128$** | Bật KV Cache | Cao | Nhanh | Thấp ($\mathcal{O}(1)$) | Nhẹ | $\sim 1.5\text{x} - 2.0\text{x}$ |
-| | Tắt KV Cache | Trung bình | Nhanh | Tăng dần | Rất nhẹ | $1.00\text{x}$ |
-| **$L=512$** | Bật KV Cache | Cao | Trung bình | Thấp ($\mathcal{O}(1)$) | Trung bình | $\sim 2.5\text{x} - 3.5\text{x}$ |
-| | Tắt KV Cache | Thấp | Trung bình | Cao | Thấp | $1.00\text{x}$ |
-| **$L=1024$** | Bật KV Cache | Rất cao | Trung bình | Thấp ($\mathcal{O}(1)$) | Tăng nhẹ | $\sim 4.0\text{x} - 6.0\text{x}$ |
-| | Tắt KV Cache | Rất thấp | Trung bình | Rất cao | Thấp | $1.00\text{x}$ |
-| **$L=2048$** | Bật KV Cache | Ổn định | Tăng do prompt | Thấp ($\mathcal{O}(1)$) | Chiếm thêm bộ nhớ cache | **$\ge 8.0\text{x}$** |
-| | Tắt KV Cache | Cực kỳ chậm | Tăng do prompt | Cực kỳ cao | Thấp | $1.00\text{x}$ |
+| **$L=128$** | **Bật KV Cache** | **86.46** | 44.08 | **11.57** | 0.0 (CPU/Shared) | **$3.63\text{x}$** |
+| | Tắt KV Cache | 23.80 | 38.39 | 42.02 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
+| **$L=512$** | **Bật KV Cache** | **39.02** | 168.54 | **25.63** | 0.0 (CPU/Shared) | **$5.41\text{x}$** |
+| | Tắt KV Cache | 7.21 | 138.53 | 138.79 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
+| **$L=1024$** | **Bật KV Cache** | **15.27** | 394.91 | **65.50** | 0.0 (CPU/Shared) | **$5.41\text{x}$** |
+| | Tắt KV Cache | 2.82 | 364.36 | 355.13 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
+| **$L=2048$** | **Bật KV Cache** | **6.70** | 1,136.86 | **149.29** | 0.0 (CPU/Shared) | **$7.44\text{x}$** |
+| | Tắt KV Cache | 0.90 | 1,115.24 | 1,116.36 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
+
+![KV Cache Benchmark](file:///e:/Python/DUT_AI/A-Module%20LLM/Prj_LLM/docs/figures/kv_cache_benchmark.png)
+
+### Nhận xét & Phân tích Động thái Kỹ thuật:
+1. **Time To First Token (TTFT):**
+   - Ở cả 2 chế độ (Bật và Tắt), TTFT gần như tương đương nhau (chênh lệch rất nhỏ do overhead cấp phát cache ban đầu). Điều này hoàn toàn chính xác theo lý thuyết, vì tại bước sinh đầu tiên, toàn bộ chuỗi ngữ cảnh $L$ tokens đều phải được xử lý qua mạng để trích xuất ma trận Key và Value cho các bước sau.
+2. **Time Per Output Token (TPOT - Next Token Latency):**
+   - **Khi Tắt KV Cache:** TPOT tăng tuyến tính và cực kỳ nhanh theo chiều dài ngữ cảnh: từ $42.02\text{ ms}$ ($L=128$) nhảy vọt lên $1,116.36\text{ ms}$ ($L=2048$) — chậm hơn gấp **26.5 lần**! Nguyên nhân là mỗi token mới được sinh ra đều ép toàn bộ mô hình phải tính toán lại Self-Attention cho toàn bộ lịch sử $L + t$ tokens với độ phức tạp $\mathcal{O}((L+t)^2)$.
+   - **Khi Bật KV Cache:** TPOT duy trì mức tăng rất nhẹ: từ $11.57\text{ ms}$ lên $149.29\text{ ms}$. Ở mỗi bước decode, mô hình chỉ tính toán duy nhất 1 token mới và nối (concatenate) vào cache, chi phí tính toán giảm về $\mathcal{O}(L)$.
+3. **Tốc độ sinh (Tokens/second) & Tỉ số Gia tốc (Speedup):**
+   - Gia tốc tăng vọt theo độ dài ngữ cảnh: từ **$3.63\text{x}$** ở $L=128$, lên **$5.41\text{x}$** ở $L=512$, $L=1024$ và đạt đỉnh **$7.44\text{x}$** ở $L=2048$. Khi ngữ cảnh càng dài, lợi thế của KV Cache càng mang tính quyết định.
 
 ---
 

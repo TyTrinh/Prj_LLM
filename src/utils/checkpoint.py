@@ -17,6 +17,7 @@ OUTPUT:
 ==============================================================================
 """
 
+import math
 import os
 from typing import Any, Dict, Optional, Tuple
 import torch
@@ -28,8 +29,8 @@ class CheckpointManager:
 
     @staticmethod
     def save_checkpoint(
-        filepath: str,
-        model: nn.Module,
+        filepath: Optional[str] = None,
+        model: Optional[nn.Module] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler: Optional[Any] = None,
         scaler: Optional[torch.amp.GradScaler] = None,
@@ -38,9 +39,16 @@ class CheckpointManager:
         best_val_loss: float = float("inf"),
         config: Optional[Any] = None,
         stage: str = "pretrain",
+        path: Optional[str] = None,
     ) -> None:
-        """Lưu toàn bộ trạng thái huấn luyện để phục vụ Resume."""
-        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        """Lưu toàn bộ trạng thái huấn luyện để phục vụ Resume (chấp nhận cả `filepath` hoặc `path`)."""
+        target_path = filepath or path
+        if target_path is None:
+            raise ValueError("Cần cung cấp 'filepath' hoặc 'path' để lưu checkpoint.")
+        if model is None:
+            raise ValueError("Cần cung cấp 'model' để lưu checkpoint.")
+
+        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
         checkpoint_dict = {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
@@ -54,25 +62,27 @@ class CheckpointManager:
             "rng_state": torch.get_rng_state(),
             "cuda_rng_state": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
         }
-        torch.save(checkpoint_dict, filepath)
+        torch.save(checkpoint_dict, target_path)
 
     @staticmethod
     def load_checkpoint(
-        filepath: str,
-        model: nn.Module,
+        filepath: Optional[str] = None,
+        model: Optional[nn.Module] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler: Optional[Any] = None,
         scaler: Optional[torch.amp.GradScaler] = None,
         device: str = "cpu",
+        path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Nạp toàn bộ trạng thái huấn luyện từ checkpoint file để resume.
 
         Trả về metadata chứa: step, epoch, best_val_loss, config, stage.
         """
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Không tìm thấy file checkpoint tại: {filepath}")
+        target_path = filepath or path
+        if target_path is None or not os.path.exists(target_path):
+            raise FileNotFoundError(f"Không tìm thấy file checkpoint tại: {target_path}")
 
-        checkpoint = torch.load(filepath, map_location=device)
+        checkpoint = torch.load(target_path, map_location=device)
 
         # Nạp trạng thái mô hình
         if "model_state_dict" in checkpoint:
@@ -147,3 +157,153 @@ class CheckpointManager:
         lora_state = checkpoint.get("lora_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
         model.load_state_dict(lora_state, strict=False)
         return model
+
+
+class CheckpointRollbackManager:
+    """
+    Hệ thống giám sát và ứng cứu Checkpoint Rollback tự động.
+
+    Chiến lược 4 bước:
+    1. Phát hiện ngưỡng bất thường: Nếu norm gradient ||\nabla_\theta L|| > Threshold * MovingAverage,
+       hoặc loss/gradient bị NaN/Inf, kích hoạt còi báo động.
+    2. Kích hoạt Rollback: Khôi phục trọng số mô hình và optimizer về checkpoint an toàn gần nhất.
+    3. Cô lập và loại bỏ batch lỗi: Bỏ qua (skip) batch dữ liệu gây bất ổn.
+    4. Điều chỉnh siêu tham số: Giảm learning rate tạm thời (ví dụ 20%) và siết chặt Gradient Clipping
+       để bảo vệ quá trình huấn luyện trước khi tăng dần trở lại.
+    """
+
+    def __init__(
+        self,
+        checkpoint_dir: str,
+        threshold_factor: float = 3.0,
+        ema_alpha: float = 0.95,
+        lr_reduction_ratio: float = 0.20,
+        tight_clip_factor: float = 0.50,
+        recovery_steps: int = 50,
+    ):
+        self.checkpoint_dir = os.path.abspath(checkpoint_dir)
+        self.threshold_factor = threshold_factor
+        self.ema_alpha = ema_alpha
+        self.lr_reduction_ratio = lr_reduction_ratio
+        self.tight_clip_factor = tight_clip_factor
+        self.recovery_steps = recovery_steps
+
+        # Trạng thái theo dõi động
+        self.grad_norm_ema: Optional[float] = None
+        self.last_safe_checkpoint_path: Optional[str] = None
+        self.in_recovery: bool = False
+        self.recovery_remaining: int = 0
+        self.current_clip_multiplier: float = 1.0
+        self.current_lr_multiplier: float = 1.0
+        self.rollback_history: list = []
+
+    def register_safe_checkpoint(self, checkpoint_path: str) -> None:
+        """Đăng ký checkpoint an toàn vừa được lưu."""
+        if os.path.exists(checkpoint_path):
+            self.last_safe_checkpoint_path = os.path.abspath(checkpoint_path)
+
+    def check_gradient_anomaly(self, grad_norm: float) -> bool:
+        """
+        Kiểm tra tính bất thường của gradient norm:
+        Trả về True nếu phát hiện bất thường (NaN, Inf, hoặc vượt quá threshold_factor * EMA).
+        """
+        if math.isnan(grad_norm) or math.isinf(grad_norm):
+            return True
+
+        if self.grad_norm_ema is None:
+            self.grad_norm_ema = grad_norm
+            return False
+
+        # Kiểm tra ngưỡng bất thường so với đường trung bình động (EMA)
+        threshold = self.threshold_factor * self.grad_norm_ema
+        if grad_norm > threshold:
+            return True
+
+        # Cập nhật EMA khi gradient ở ngưỡng an toàn
+        self.grad_norm_ema = self.ema_alpha * self.grad_norm_ema + (1.0 - self.ema_alpha) * grad_norm
+        return False
+
+    def trigger_rollback(
+        self,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scaler: Optional[torch.amp.GradScaler] = None,
+        scheduler: Optional[Any] = None,
+        device: str = "cpu",
+        failed_step: int = 0,
+        reason: str = "Gradient norm spike anomaly",
+    ) -> Dict[str, Any]:
+        """
+        Thực thi quy trình Rollback về checkpoint an toàn gần nhất.
+        """
+        target_ckpt = self.last_safe_checkpoint_path
+        if target_ckpt is None or not os.path.exists(target_ckpt):
+            # Thử tìm file last_checkpoint.pt hoặc base_model.pt trong checkpoint_dir
+            candidates = [
+                os.path.join(self.checkpoint_dir, "last_checkpoint.pt"),
+                os.path.join(self.checkpoint_dir, "base_model.pt"),
+            ]
+            for c in candidates:
+                if os.path.exists(c):
+                    target_ckpt = c
+                    break
+
+        if target_ckpt is None or not os.path.exists(target_ckpt):
+            raise FileNotFoundError(
+                f"[Rollback Manager] Không tìm thấy bất kỳ checkpoint an toàn nào tại {self.checkpoint_dir} để rollback!"
+            )
+
+        print("=" * 70)
+        print(f"🚨 [CẢNH BÁO ỨNG CỨU] Phát hiện sự cố tại Step {failed_step}: {reason}!")
+        print(f"🔄 Đang kích hoạt Rollback tự động về Checkpoint an toàn: {target_ckpt}...")
+
+        # 1. Rollback trọng số mô hình và trạng thái optimizer
+        restored_meta = CheckpointManager.load_checkpoint(
+            path=target_ckpt,
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            scheduler=scheduler,
+            device=device,
+        )
+
+        # 2. Điều chỉnh siêu tham số: Giảm LR 20% và siết chặt Gradient Clipping
+        self.in_recovery = True
+        self.recovery_remaining = self.recovery_steps
+        self.current_lr_multiplier = 1.0 - self.lr_reduction_ratio
+        self.current_clip_multiplier = self.tight_clip_factor
+
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = param_group["lr"] * self.current_lr_multiplier
+
+        rollback_record = {
+            "failed_step": failed_step,
+            "restored_step": restored_meta.get("step", 0),
+            "restored_from": target_ckpt,
+            "reason": reason,
+            "lr_multiplier": self.current_lr_multiplier,
+            "clip_multiplier": self.current_clip_multiplier,
+        }
+        self.rollback_history.append(rollback_record)
+
+        print(f"✅ Rollback hoàn tất! Khôi phục về Step {restored_meta.get('step', 0)}.")
+        print(f"⚡ Điều chỉnh an toàn: Giảm tạm thời 20% LR (x{self.current_lr_multiplier:.2f}) "
+              f"và siết Gradient Clipping (x{self.tight_clip_factor:.2f}) trong {self.recovery_steps} steps tiếp theo.")
+        print("=" * 70)
+
+        return restored_meta
+
+    def step_recovery(self, optimizer: torch.optim.Optimizer) -> None:
+        """
+        Theo dõi và nới lỏng dần các hạn chế siêu tham số sau khi qua vùng sự cố.
+        """
+        if not self.in_recovery:
+            return
+
+        self.recovery_remaining -= 1
+        if self.recovery_remaining <= 0:
+            self.in_recovery = False
+            self.current_lr_multiplier = 1.0
+            self.current_clip_multiplier = 1.0
+            print("🌱 [Rollback Manager] Đã qua vùng rủi ro, khôi phục lại tỷ lệ LR và Clipping bình thường.")
+

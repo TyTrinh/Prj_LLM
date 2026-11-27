@@ -29,11 +29,11 @@
     - [x]  Viết `encode(text) → List[int]` và `decode(ids) → str`.
     - [x]  Viết `save_vocab(path)` và `load(path, ...)` (đối chiếu đúng tên API thực tế) để lưu/nạp `vocab.json` và `merges.txt`.
     - [x]  Kiểm thử round-trip, special tokens, dấu câu, số, Unicode/UTF-8 và byte fallback.
-    - [ ]  Chọn 500.000 mẫu TinyStories và split theo story trước khi train tokenizer: 475.000 Train / 25.000 Validation; cố định split seed và lưu danh sách sample IDs.
-    - [ ]  **Train BPE thực tế chỉ trên 475.000 story Train**; tuyệt đối không dùng 25.000 story Validation để học merge rules.
-    - [ ]  Chốt `vocab_size=8192` theo `Byte_Fallback_BPE_Tokenizer.md`: Special Tokens `0..4`, Raw Bytes `5..260`, Merge Tokens `261..8191` (mục tiêu 7.931 merge operations).
-    - [ ]  Kiểm tra số merge thực tế, ID liên tục/không trùng, thứ tự merge, encode/decode và save-load round-trip sau khi train. Nếu thuật toán dừng sớm hoặc không tạo đủ merges, dừng và báo cáo thay vì tự nhận đã tạo Vocab 8K.
-    - [ ]  Lưu tokenizer artifact bất biến (`vocab.json`, `merges.txt`, special-token map, config và fingerprint/hash); không train lại hoặc sửa tokenizer sau khi Pretraining bắt đầu.
+    - [x]  Chọn 500.000 mẫu TinyStories và split theo story trước khi train tokenizer: 475.000 Train / 25.000 Validation; cố định split seed và lưu danh sách sample IDs.
+    - [x]  **Train BPE thực tế chỉ trên 475.000 story Train**; tuyệt đối không dùng 25.000 story Validation để học merge rules.
+    - [x]  Chốt `vocab_size=8192` theo `Byte_Fallback_BPE_Tokenizer.md`: Special Tokens `0..4`, Raw Bytes `5..260`, Merge Tokens `261..8191` (mục tiêu 7.931 merge operations).
+    - [x]  Kiểm tra số merge thực tế, ID liên tục/không trùng, thứ tự merge, encode/decode và save-load round-trip sau khi train. Nếu thuật toán dừng sớm hoặc không tạo đủ merges, dừng và báo cáo thay vì tự nhận đã tạo Vocab 8K.
+    - [x]  Lưu tokenizer artifact bất biến (`vocab.json`, `merges.txt`, special-token map, config và fingerprint/hash); không train lại hoặc sửa tokenizer sau khi Pretraining bắt đầu.
     - [ ]  Đo tokenization statistics trên TinyStories và kiểm tra thêm fertility/độ dài chuỗi trên mẫu Alpaca-Cleaned, HH-RLHF để đánh giá khả năng dùng chung cho SFT/DPO. Các tập SFT/DPO chỉ dùng để kiểm tra, không đưa vào corpus train BPE trong kế hoạch hiện tại.
 - **Lập trình Kiến trúc Decoder-Only Transformer bằng PyTorch thuần (Chiếm 10% điểm)**
     - [x]  Viết lớp `RMSNorm(nn.Module)` (hoặc `LayerNorm` chuẩn hóa trước - Pre-Norm để ổn định gradient)
@@ -65,7 +65,7 @@
     - [ ]  Không load trọng số checkpoint Vocab 261 vào model Vocab 8K. Giữ checkpoint cũ ở vùng lưu trữ legacy để đối chứng; không ghi đè.
     - [ ]  Benchmark 20–50 optimizer steps trước khi train chính thức; thử micro-batch nhỏ (bắt đầu 4, cân nhắc 8 nếu VRAM cho phép), điều chỉnh gradient accumulation theo peak VRAM và effective batch thực tế.
     - [ ]  Ghi nhận throughput, peak VRAM, loss, gradient norm và tình trạng AMP/NaN/Inf; chỉ chốt batch config sau benchmark trên GPU thực tế.
-    - [ ]  Chạy Pretraining mới từ Step 0; mục tiêu 3.000 optimizer steps, đánh giá tại các mốc 500/1.000/1.500/2.000/2.500/3.000 steps.
+    - [ ]  Chạy Pretraining mới từ Step 0; mục tiêu 4.600 optimizer steps (1.5 Epochs), đánh giá tại các mốc 500/1.000/1.500/2.000/2.500/4.600 steps.
     - [ ]  Thiết lập Learning Rate schedule mới từ Step 0 (warmup + cosine); không dùng LR/scheduler state của checkpoint Vocab 261. Chọn peak LR sau pilot, không mặc định giữ nguyên lịch cũ khi chưa kiểm tra ổn định.
     - [ ]  Tính số token thực tế sau BPE và số token positions đã xử lý (`steps × effective_batch_sequences × sequence_length`); không suy số token bằng giả định tokens/story cố định và không gọi random memmap sampling là một epoch đầy đủ.
     - [ ]  Lưu checkpoint định kỳ và tách riêng `initial`, `last`, `best`; lưu đầy đủ model, optimizer, AMP scaler, step, RNG, config, tokenizer hash, dataset metadata và trạng thái sampling cần thiết để resume.
@@ -152,7 +152,7 @@ THỜI GIAN    │ LUỒNG 1: TUẦN TỰ (Đường găng bắt buộc)        
              │        ──► Save/Load + Round-trip + Unit Test model     │ • Dựng sẵn khung báo cáo và lưu artifacts/checkpoints
 ─────────────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────
  NGÀY 3 – 6  │ [GĐ 2] Tokenize 500K ──► Pretrain BPE 32K từ Step 0  │ • Code sẵn class LoRALinear (có công tắc bật/tắt)
- (4 ngày)    │        ──► Pilot VRAM/throughput rồi train 3.000 steps │ • Test DPO Loss trên mô hình nhỏ ở CPU
+ (4 ngày)    │        ──► Pilot VRAM/throughput rồi train 4.600 steps │ • Test DPO Loss trên mô hình nhỏ ở CPU
              │        ──► KV Cache profiling + demo Base Model mới     │ • Chuẩn bị bộ prompt đánh giá Base Model
 ─────────────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────
  NGÀY 7 – 9  │ [GĐ 3] Gắn LoRA vào Base ──► Train SFT (Alpaca)         │ • Lập trình bộ lọc Input/Output Guardrails (Regex

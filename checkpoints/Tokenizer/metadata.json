@@ -1,0 +1,15 @@
+{
+  "vocab_size": 8192,
+  "target_vocab_size": 8192,
+  "num_merges": 7931,
+  "fingerprint": "b8fc079735666d40941eadecf1d0ddf6b3c4c44b43aba1600cac6f447f9418ad",
+  "special_tokens": {
+    "<|pad|>": 0,
+    "<|bos|>": 1,
+    "<|eos|>": 2,
+    "<|user|>": 3,
+    "<|assistant|>": 4
+  },
+  "seed": 42,
+  "train_samples": 475000
+}

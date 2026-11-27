@@ -137,3 +137,31 @@
     TRAIN_BLOCK_SIZE = 512    # Trong lúc train chỉ cắt batch độ dài 512
     ```
   - **Giải thích lý do:** Tách biệt rõ ràng giữa **Năng lực tối đa của kiến trúc (Architecture Capacity: 2048)** và **Kích thước lát cắt huấn luyện (Training Slice: 512)**. Nhờ đó, ma trận RoPE có sẵn dải tần số cho 2048 vị trí để phục vụ Profiling mượt mà, trong khi quá trình pre-train vẫn tiết kiệm được VRAM và tăng tốc độ xử lý bằng cách giới hạn chuỗi dữ liệu ở 512 tokens.
+
+---
+
+### 7. Lỗi Kaggle Secrets không tự nạp khiến Notebook bị treo hỏi API Key W&B
+* **File vi phạm:** `notebooks/LLM_01_pretrain_base_model.ipynb`
+* **Vi phạm:** Chỉ đọc cứng duy nhất tên nhãn `"WANDB_API_KEY"` và gọi fallback `wandb.login()` trần khi không thấy key.
+* **Lỗi trước vi phạm & Hậu quả gây ra:**
+  - *Bản chất lỗi:* Trên Kaggle, người dùng có thể đặt nhãn bí mật khác tên (như `wandb`, `wandb_key`) hoặc đã tạo Secret nhưng **quên chưa tích ô vuông (checkbox)** trong menu `Add-ons -> Secrets` để gắn secret vào notebook đang mở. Khi đó, hàm `user_secrets.get_secret("WANDB_API_KEY")` ném ngoại lệ hoặc trả về rỗng. Code cũ gọi tiếp lệnh `wandb.login()`, khiến Jupyter Notebook kích hoạt interactive prompt yêu cầu nhập API key bằng bàn phím.
+  - *Hậu quả:* Cell bị đứng chờ nhập liệu, người dùng ngỡ rằng Kaggle không nhận key dù đã thêm vào Secrets.
+* **Cách khắc phục & Giải thích chi tiết:**
+  - *Mã nguồn:*
+    ```python
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        for secret_name in ["WANDB_API_KEY", "wandb_api_key", "wandb_key", "wandb", "WANDB"]:
+            try:
+                val = user_secrets.get_secret(secret_name)
+                if val and val.strip():
+                    WANDB_API_KEY = val.strip()
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    ```
+    Nếu không tìm thấy, tự động fallback an toàn sang `WANDB_MODE="offline"` kèm hướng dẫn rõ ràng, không gọi `wandb.login()` rỗng để tránh treo kernel.
+  - *Giải thích lý do:* Tăng tính thích ứng (fault-tolerant) cho notebook, tự động hỗ trợ các cách đặt tên nhãn khác nhau của người dùng và ngăn chặn hoàn toàn việc block kernel khi chạy không có giám sát.
