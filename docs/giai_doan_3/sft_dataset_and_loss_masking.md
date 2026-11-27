@@ -234,3 +234,29 @@ Tuân thủ nghiêm ngặt nguyên tắc **Constitution** ("Verify before report
 - **Cách khắc phục & Lý do:**
   - Đổi thành `if not instruction or not output: continue`, đảm bảo cả câu hỏi và câu trả lời đều có nội dung thực sự.
 
+---
+
+### 6.2. Cải tiến Chất lượng Toàn diện trong Notebook Huấn luyện (`notebooks/02_train_sft_lora.ipynb`)
+
+Dựa trên phân tích chuyên sâu về pipeline huấn luyện Cloud, các nâng cấp sau đã được bổ sung nhằm đảm bảo tính toán học và tính thực chiến cao nhất:
+
+1. **Kiểm soát Nạp Trọng số Khắt khe (`strict=True`):**
+   - Thay thế `strict=False` thành `strict=True` khi nạp Base Model nhằm phát hiện ngay lập tức bất kỳ sự sai lệch nào về tên layer hoặc shape tensor.
+2. **Kiểm tra Tương thích Tokenizer & Special Tokens Mapping:**
+   - Thêm các lệnh kiểm tra xác thực ID cố định: `<|pad|>=0, <|bos|>=1, <|eos|>=2, <|user|>=3, <|assistant|>=4`.
+3. **Gradient Flow Sanity Check Trước Huấn Luyện:**
+   - Chạy thử 1 batch giả lập và gọi `loss.backward()` để xác minh: tham số LoRA $A, B$ có gradient khác 0 và không NaN/Inf, trong khi toàn bộ tham số Base Model không nhận bất kỳ gradient nào.
+4. **Xáo trộn ngẫu nhiên (Shuffle) trước khi chọn 10.000 mẫu:**
+   - Dùng `random.seed(42)` và `random.shuffle()` trên toàn bộ tập dữ liệu Alpaca trước khi cắt subset để loại bỏ hoàn toàn rủi ro thiên lệch chủ đề theo thứ tự ban đầu.
+5. **Chuẩn hóa Gradient Accumulation tại Batch cuối:**
+   - Tính toán động `current_accum = min(GRAD_ACCUM, remaining_steps)` để đảm bảo micro-batches cuối không bị chia thừa làm giảm độ lớn gradient.
+6. **Tách biệt Loss Tracking cho W&B:**
+   - Tách thành `interval_loss` (đo loss của 20 optimizer steps gần nhất để log live lên W&B không bị làm phẳng) và `epoch_loss`.
+7. **Validation Loss chuẩn hóa theo Tổng số Token hợp lệ:**
+   - Áp dụng công thức $L_{\text{val}} = \frac{\sum \text{CrossEntropy Loss}}{\sum \text{Valid Target Tokens}}$ để tránh hiện tượng batch-weighting bias khi độ dài các câu trả lời chênh lệch.
+8. **Đồng bộ Nạp Best Checkpoint trước khi Đánh giá Đối chứng:**
+   - Sau khi kết thúc huấn luyện, tự động nạp lại file `sft_lora.pt` (Best Validation Checkpoint) vào mô hình trước khi chạy thử nghiệm đối chứng.
+9. **Đánh giá Tất định bằng Greedy Decoding (`temperature=0.0`):**
+   - Đưa mô hình về `model.eval()`, tắt tính ngẫu nhiên của sampler để kiểm chứng khách quan sự khác biệt: Base Model nói lan man vs SFT Model trả lời đúng trọng tâm và biết dừng ở `<|eos|>`.
+
+

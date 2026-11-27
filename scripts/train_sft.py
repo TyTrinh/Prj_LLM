@@ -39,8 +39,15 @@ from src.utils.seed import set_seed
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Huấn luyện SFT LoRA từ số 0")
-    parser.add_argument("--base_model", type=str, default="checkpoints/base_model.pt", help="Đường dẫn base model checkpoint")
-    parser.add_argument("--output_lora", type=str, default="checkpoints/sft_lora.pt", help="Đường dẫn lưu adapter LoRA")
+    # Tự động tìm base_model tại checkpoints/KV Cache & Pre-training/ hoặc checkpoints/
+    default_base = os.path.join("checkpoints", "KV Cache & Pre-training", "base_model.pt")
+    if not os.path.exists(default_base):
+        default_base = os.path.join("checkpoints", "base_model.pt")
+
+    default_lora = os.path.join("checkpoints", "LoRA & SFT", "sft_lora.pt")
+
+    parser.add_argument("--base_model", type=str, default=default_base, help="Đường dẫn base model checkpoint")
+    parser.add_argument("--output_lora", type=str, default=default_lora, help="Đường dẫn lưu adapter LoRA")
     parser.add_argument("--data_file", type=str, default="data/alpaca_cleaned.json", help="File dữ liệu Alpaca JSON")
     parser.add_argument("--vocab_file", type=str, default="checkpoints/vocab.json", help="Đường dẫn vocab.json")
     parser.add_argument("--merges_file", type=str, default="checkpoints/merges.txt", help="Đường dẫn merges.txt")

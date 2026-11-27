@@ -16,6 +16,8 @@ env/
 data/*.bin
 data/*.jsonl
 data/*.parquet
+checkpoints/**/*.pt
+checkpoints/**/*.bin
 checkpoints/*.pt
 checkpoints/*.bin
 !checkpoints/.gitkeep
@@ -25,6 +27,10 @@ checkpoints/*.bin
 wandb/
 runs/
 *.log
+
+# Jupyter Notebook artifacts
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
 
 # OS & IDE
 .vscode/

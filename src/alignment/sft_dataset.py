@@ -151,6 +151,7 @@ class SFTDataCollator:
         ignore_index: int = -100,
         pad_id: int = PAD_ID,
         eos_id: int = EOS_ID,
+        dynamic_padding: bool = True,
     ):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
@@ -158,6 +159,7 @@ class SFTDataCollator:
         self.ignore_index = ignore_index
         self.pad_id = pad_id
         self.eos_id = eos_id
+        self.dynamic_padding = dynamic_padding
 
     def __call__(self, batch: List[Dict[str, str]]) -> Dict[str, torch.Tensor]:
         batch_input_ids = []
@@ -216,19 +218,33 @@ class SFTDataCollator:
             labels = [self.ignore_index] * prompt_len + response_ids
             attention_mask = [1] * seq_len
 
-            # 6. Padding nếu seq_len < max_seq_len
-            padding_len = self.max_seq_len - seq_len
-            if padding_len > 0:
-                input_ids = input_ids + [self.pad_id] * padding_len
-                labels = labels + [self.ignore_index] * padding_len
-                attention_mask = attention_mask + [0] * padding_len
-
             batch_input_ids.append(input_ids)
             batch_labels.append(labels)
             batch_attention_mask.append(attention_mask)
 
+        # 6. Padding theo Dynamic Padding (độ dài lớn nhất trong batch) hoặc Max Seq Len
+        if self.dynamic_padding:
+            max_batch_len = max(len(seq) for seq in batch_input_ids) if batch_input_ids else self.max_seq_len
+            target_pad_len = min(self.max_seq_len, max_batch_len)
+        else:
+            target_pad_len = self.max_seq_len
+
+        padded_input_ids = []
+        padded_labels = []
+        padded_attention_mask = []
+
+        for input_ids, labels, attention_mask in zip(batch_input_ids, batch_labels, batch_attention_mask):
+            padding_len = target_pad_len - len(input_ids)
+            if padding_len > 0:
+                input_ids = input_ids + [self.pad_id] * padding_len
+                labels = labels + [self.ignore_index] * padding_len
+                attention_mask = attention_mask + [0] * padding_len
+            padded_input_ids.append(input_ids)
+            padded_labels.append(labels)
+            padded_attention_mask.append(attention_mask)
+
         return {
-            "input_ids": torch.tensor(batch_input_ids, dtype=torch.long),
-            "labels": torch.tensor(batch_labels, dtype=torch.long),
-            "attention_mask": torch.tensor(batch_attention_mask, dtype=torch.long),
+            "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
+            "labels": torch.tensor(padded_labels, dtype=torch.long),
+            "attention_mask": torch.tensor(padded_attention_mask, dtype=torch.long),
         }

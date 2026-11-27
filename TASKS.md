@@ -38,13 +38,13 @@
         2. *Decoding (Sinh từng token tiếp theo):* Chỉ tính toán trên 1 token mới nhất ($T=1$), nối (concatenate) $K, V$ mới vào cache cũ để truy xuất lại toàn bộ lịch sử
     - [x]  Viết hàm sinh văn bản tự hồi quy `generate()` hỗ trợ Greedy Search, Temperature Sampling và Top-k / Top-p Sampling
 - **Tiền huấn luyện Base Model trên Kaggle**
-    - [ ]  Cấu hình siêu tham số mô hình vừa vặn 16GB VRAM (gợi ý: ~40M–60M tham số, `d_model=512`, `n_layers=8`, `n_heads=8`, `block_size=512`)
-    - [ ]  Viết vòng lặp huấn luyện sử dụng `torch.cuda.amp.autocast(dtype=torch.float16)`, Gradient Accumulation và Cosine Learning Rate Scheduler.
-    - [ ]  Chạy huấn luyện trên Kaggle GPU cho đến khi Validation Loss hội tụ ổn định, lưu checkpoint `base_model.pt`
+    - [x]  Cấu hình siêu tham số mô hình vừa vặn 16GB VRAM (gợi ý: ~40M–60M tham số, `d_model=512`, `n_layers=8`, `n_heads=8`, `block_size=512`)
+    - [x]  Viết vòng lặp huấn luyện sử dụng `torch.cuda.amp.autocast(dtype=torch.float16)`, Gradient Accumulation và Cosine Learning Rate Scheduler.
+    - [x]  Chạy huấn luyện trên Kaggle GPU cho đến khi Validation Loss hội tụ ổn định, lưu checkpoint `base_model.pt`
 - **Đo đạc thực nghiệm KV Cache (Profiling)**
-    - [ ]  Viết script benchmark đo đạc hiệu năng ở 2 trạng thái **Bật KV Cache** vs. **Tắt KV Cache** tại 4 mốc độ dài ngữ cảnh: $L \in \{128, 512, 1024, 2048\}$
-    - [ ]  Ghi nhận đủ 4 chỉ số: Tốc độ sinh từ (`Tokens/giây`), `First Token Latency` (TTFT), `Next Token Latency` (TPOT), và `Peak VRAM` (`torch.cuda.max_memory_allocated()`)
-    - [ ]  **Chốt Checkpoint 2:** Xuất biểu đồ so sánh Profiling + Quay video/chụp ảnh demo `base_model.pt` tự sinh văn bản mượt mà
+    - [x]  Viết script benchmark đo đạc hiệu năng ở 2 trạng thái **Bật KV Cache** vs. **Tắt KV Cache** tại 4 mốc độ dài ngữ cảnh: $L \in \{128, 512, 1024, 2048\}$
+    - [x]  Ghi nhận đủ 4 chỉ số: Tốc độ sinh từ (`Tokens/giây`), `First Token Latency` (TTFT), `Next Token Latency` (TPOT), và `Peak VRAM` (`torch.cuda.max_memory_allocated()`)
+    - [x]  **Chốt Checkpoint 2:** Xuất biểu đồ so sánh Profiling + Quay video/chụp ảnh demo `base_model.pt` tự sinh văn bản mượt mà
 
 ## Giai đoạn 3: Tự code LoRA & Huấn luyện SFT
 

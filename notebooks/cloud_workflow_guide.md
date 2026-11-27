@@ -45,14 +45,18 @@ Trong Notebook Kaggle hoặc Colab (chọn GPU T4/P100), chỉ cần chạy 1 ce
 ```
 > Nhờ có `pyproject.toml`, lệnh `pip install -e .` giúp bạn có thể `import src.model` từ bất kỳ đâu trên Cloud mà không bao giờ bị lỗi `ModuleNotFoundError`.
 
-### Bước 3: Chạy script huấn luyện trên Cloud
-Không cần copy-paste hàng nghìn dòng code vào notebook, bạn chỉ cần gọi script:
+### Bước 3: Chạy script huấn luyện hoặc chạy Notebook chuyên biệt
+Không cần copy-paste hàng nghìn dòng code vào notebook, bạn có thể:
+1. **Chạy qua Notebook có sẵn:**
+   - Pre-training & Đo đạc KV Cache: `notebooks/01_pretrain_base_model.ipynb`
+   - Fine-tuning LoRA SFT & Checkpoint 3A: `notebooks/02_train_sft_lora.ipynb`
+2. **Hoặc gọi trực tiếp qua CLI Script:**
 ```python
 # Pre-training Base Model
 !python scripts/train_base.py --epochs 3 --batch_size 32
 
 # Hoặc Fine-tuning LoRA SFT
-!python scripts/train_sft.py --base_model checkpoints/base_model.pt
+!python scripts/train_sft.py --base_model checkpoints/base_model.pt --epochs 2
 
 # Hoặc DPO Alignment
 !python scripts/train_dpo.py --sft_model checkpoints/sft_lora.pt
