@@ -118,8 +118,8 @@ def main():
         lr_reduction_ratio=0.20,
         recovery_steps=50,
     )
-    if candidate_ckpt:
-        rollback_manager.register_safe_checkpoint(candidate_ckpt)
+    if args.resume and os.path.exists(last_ckpt_path):
+        rollback_manager.register_safe_checkpoint(last_ckpt_path)
 
     print(f"Tokens/step: {tokens_per_step:,} | Total Steps: {total_steps:,}")
 
