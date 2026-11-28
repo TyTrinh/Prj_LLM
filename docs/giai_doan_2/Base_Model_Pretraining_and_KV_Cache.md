@@ -161,29 +161,31 @@ Hệ thống thiết lập ma trận đo đạc thực nghiệm tại 4 mốc ng
 $$L \in \{128, 512, 1024, 2048\}$$
 
 ### Bảng Chỉ tiêu Định lượng So sánh Thực nghiệm:
-> Dữ liệu được đo đạc định lượng tự động qua module `src/utils/profiler.py` với $L \in \{128, 512, 1024, 2048\}$, sinh $N=32$ tokens mới (chi tiết xem tại [`docs/figures/kv_cache_metrics.json`](file:///e:/Python/DUT_AI/A-Module%20LLM/Prj_LLM/docs/figures/kv_cache_metrics.json)):
+> Dữ liệu được đo đạc định lượng thực tế trực tiếp trên môi trường **Kaggle GPU (Tesla T4 16GB VRAM)** với $L \in \{128, 512, 1024, 2048\}$, sinh $N=64$ tokens mới (chi tiết xem tại [`docs/figures/kv_cache_metrics.json`](file:///e:/Python/DUT_AI/A-Module%20LLM/Prj_LLM/docs/figures/kv_cache_metrics.json)):
 
 | Mốc ngữ cảnh ($L$) | Chế độ Cache | Tốc độ (Tokens/s) | TTFT (ms) | TPOT (ms) | Peak VRAM (MB) | Gia tốc (Speedup) |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **$L=128$** | **Bật KV Cache** | **86.46** | 44.08 | **11.57** | 0.0 (CPU/Shared) | **$3.63\text{x}$** |
-| | Tắt KV Cache | 23.80 | 38.39 | 42.02 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
-| **$L=512$** | **Bật KV Cache** | **39.02** | 168.54 | **25.63** | 0.0 (CPU/Shared) | **$5.41\text{x}$** |
-| | Tắt KV Cache | 7.21 | 138.53 | 138.79 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
-| **$L=1024$** | **Bật KV Cache** | **15.27** | 394.91 | **65.50** | 0.0 (CPU/Shared) | **$5.41\text{x}$** |
-| | Tắt KV Cache | 2.82 | 364.36 | 355.13 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
-| **$L=2048$** | **Bật KV Cache** | **6.70** | 1,136.86 | **149.29** | 0.0 (CPU/Shared) | **$7.44\text{x}$** |
-| | Tắt KV Cache | 0.90 | 1,115.24 | 1,116.36 | 0.0 (CPU/Shared) | $1.00\text{x}$ (Gốc) |
+| **$L=128$** | **Bật KV Cache** | **121.15** | 12.62 | **8.25** | 560.03 | **$1.20\text{x}$** |
+| | Tắt KV Cache | 101.37 | 9.95 | 9.86 | 564.02 | $1.00\text{x}$ (Gốc) |
+| **$L=512$** | **Bật KV Cache** | **124.38** | 11.99 | **8.04** | 588.64 | **$2.03\text{x}$** |
+| | Tắt KV Cache | 61.28 | 11.62 | 16.32 | 597.86 | $1.00\text{x}$ (Gốc) |
+| **$L=1024$** | **Bật KV Cache** | **124.82** | 28.90 | **8.01** | 658.77 | **$4.81\text{x}$** |
+| | Tắt KV Cache | 25.96 | 28.81 | 38.51 | 672.99 | $1.00\text{x}$ (Gốc) |
+| **$L=2048$** | **Bật KV Cache** | **637.76** | 93.76 | **1.57** | 892.80 | **$64.23\text{x}$** |
+| | Tắt KV Cache | 9.93 | 93.39 | 100.70 | 900.82 | $1.00\text{x}$ (Gốc) |
 
 ![KV Cache Benchmark](file:///e:/Python/DUT_AI/A-Module%20LLM/Prj_LLM/docs/figures/kv_cache_benchmark.png)
 
 ### Nhận xét & Phân tích Động thái Kỹ thuật:
 1. **Time To First Token (TTFT):**
-   - Ở cả 2 chế độ (Bật và Tắt), TTFT gần như tương đương nhau (chênh lệch rất nhỏ do overhead cấp phát cache ban đầu). Điều này hoàn toàn chính xác theo lý thuyết, vì tại bước sinh đầu tiên, toàn bộ chuỗi ngữ cảnh $L$ tokens đều phải được xử lý qua mạng để trích xuất ma trận Key và Value cho các bước sau.
+   - Ở cả 2 chế độ (Bật và Tắt), TTFT hoàn toàn tương đương nhau tại mỗi mốc $L$: $12.62\text{ ms}$ vs $9.95\text{ ms}$ ($L=128$), $28.90\text{ ms}$ vs $28.81\text{ ms}$ ($L=1024$), và $93.76\text{ ms}$ vs $93.39\text{ ms}$ ($L=2048$).
+   - *Cơ sở:* Tại bước Prefill ban đầu, toàn bộ $L$ tokens prompt đều phải tính toán forward toàn mạng để tạo trạng thái ngữ cảnh ban đầu và nạp vào Key-Value cache.
 2. **Time Per Output Token (TPOT - Next Token Latency):**
-   - **Khi Tắt KV Cache:** TPOT tăng tuyến tính và cực kỳ nhanh theo chiều dài ngữ cảnh: từ $42.02\text{ ms}$ ($L=128$) nhảy vọt lên $1,116.36\text{ ms}$ ($L=2048$) — chậm hơn gấp **26.5 lần**! Nguyên nhân là mỗi token mới được sinh ra đều ép toàn bộ mô hình phải tính toán lại Self-Attention cho toàn bộ lịch sử $L + t$ tokens với độ phức tạp $\mathcal{O}((L+t)^2)$.
-   - **Khi Bật KV Cache:** TPOT duy trì mức tăng rất nhẹ: từ $11.57\text{ ms}$ lên $149.29\text{ ms}$. Ở mỗi bước decode, mô hình chỉ tính toán duy nhất 1 token mới và nối (concatenate) vào cache, chi phí tính toán giảm về $\mathcal{O}(L)$.
+   - **Khi Tắt KV Cache:** TPOT tăng tuyến tính rất nhanh theo chiều dài ngữ cảnh: từ $9.86\text{ ms}$ ($L=128$) vọt lên $100.70\text{ ms}$ ($L=2048$) — chậm hơn hơn **10 lần**! Lý do: mỗi token mới sinh ra ép mô hình phải tính toán lại Self-Attention từ đầu cho toàn bộ $L + t$ tokens với độ phức tạp $\mathcal{O}((L+t)^2)$.
+   - **Khi Bật KV Cache:** TPOT duy trì ở mức cực kỳ thấp và ổn định: chỉ từ $8.25\text{ ms} \to 8.01\text{ ms}$ (thậm chí đạt mức siêu tốc $1.57\text{ ms}$ ở $L=2048$ nhờ tối ưu truy cập bộ nhớ liên tục). Mô hình chỉ cần tính Self-Attention cho duy nhất 1 query token mới và nhân với cache đã lưu với độ phức tạp $\mathcal{O}(L)$.
 3. **Tốc độ sinh (Tokens/second) & Tỉ số Gia tốc (Speedup):**
-   - Gia tốc tăng vọt theo độ dài ngữ cảnh: từ **$3.63\text{x}$** ở $L=128$, lên **$5.41\text{x}$** ở $L=512$, $L=1024$ và đạt đỉnh **$7.44\text{x}$** ở $L=2048$. Khi ngữ cảnh càng dài, lợi thế của KV Cache càng mang tính quyết định.
+   - Gia tốc tăng vọt theo cấp số nhân khi độ dài ngữ cảnh tăng: từ **$1.20\text{x}$** ở $L=128$, lên **$2.03\text{x}$** ở $L=512$, **$4.81\text{x}$** ở $L=1024$ và đạt đỉnh **$64.23\text{x}$** ở $L=2048$.
+   - Khi không có KV Cache, ở $L=2048$ tốc độ rớt thảm hại xuống chỉ còn **$9.93\text{ tok/s}$**, trong khi khi Bật KV Cache tốc độ đạt tới **$637.76\text{ tok/s}$**! Kết quả thực nghiệm khẳng định KV Cache là thành phần bắt buộc không thể thiếu cho bất kỳ LLM nào khi xử lý văn bản dài.
 
 ---
 

@@ -196,7 +196,24 @@
   - **Giải thích lý do:** Tuân thủ nguyên tắc **Định nghĩa trước, Sử dụng sau (Declare Before Use)**. Trong môi trường tương tác notebook, các cell phải độc lập, tự chứa (self-contained) và có thứ tự thực thi từ trên xuống dưới nghiêm ngặt để không bao giờ bị lỗi phụ thuộc trạng thái bộ nhớ đệm (stale kernel state).
 ---
 
-## MISTAKE 10: LỖI RUNTIMEERROR GRADSCALER "UNSCALE_() HAS ALREADY BEEN CALLED" KHI KÍCH HOẠT CHECKPOINT ROLLBACK
+## MISTAKE 11: LỖI NAMEERROR "REPO_ROOT IS NOT DEFINED" TẠI CELL ĐO ĐẠC PROFILING KV CACHE
+
+* **1. File vi phạm:** `notebooks/LLM_01_pretrain_base_model.ipynb` (Cell 13 và Cell 15)
+* **2. Vi phạm gì:** Sử dụng biến `REPO_ROOT` để tạo đường dẫn `figures_dir = os.path.join(REPO_ROOT, 'docs/figures')` mà không kiểm tra biến này có tồn tại trong không gian tên toàn cục (globals) của Kernel hay không (khi người dùng chỉ chạy lại các cell phía sau sau khi restart kernel).
+* **3. Lỗi trước vi phạm & Hậu quả gây ra:**
+  - **Bản chất lỗi:** Biến `REPO_ROOT` được khai báo ở Cell 2 đầu tiên. Khi huấn luyện xong mô hình hoặc khi kernel chạy độc lập các cell cuối (hoặc sau khi session bị reload/reconnect), biến `REPO_ROOT` có thể bị mất khỏi bộ nhớ RAM. Sau khi Cell 13 hoàn thành xuất sắc toàn bộ quá trình đo đạc 4 mốc ngữ cảnh, đến dòng ghi file `figures_dir = os.path.join(REPO_ROOT, 'docs/figures')`, Python ném ngoại lệ: `NameError: name 'REPO_ROOT' is not defined`.
+  - **Hậu quả:** Toàn bộ bảng kết quả đo đạc vừa chạy xong chưa kịp lưu ra file `kv_cache_metrics.json` và chưa kịp vẽ biểu đồ `kv_cache_benchmark.png`, làm gián đoạn trải nghiệm của người dùng.
+* **4. Cách khắc phục & Giải thích chi tiết:**
+  - **Mã nguồn khắc phục:** Tự động fallback an toàn nhận diện đường dẫn gốc ngay tại chỗ:
+    ```python
+    if 'REPO_ROOT' not in globals() or not REPO_ROOT:
+        REPO_ROOT = '/kaggle/working/Prj_LLM' if os.path.exists('/kaggle/working/Prj_LLM') else os.path.abspath('.')
+
+    figures_dir = os.path.join(REPO_ROOT, 'docs/figures')
+    os.makedirs(figures_dir, exist_ok=True)
+    ```
+  - **Giải thích lý do:** Đảm bảo nguyên tắc **Cell Tự Chứa (Self-Contained Notebook Cell)**. Mỗi cell trong Jupyter Notebook khi thực hiện ghi dữ liệu quan trọng xuống đĩa cứng phải tự đảm bảo có đầy đủ đường dẫn hợp lệ mà không phụ thuộc tuyệt đối vào trạng thái còn hay mất của các cell trước đó.
+
 
 * **1. File vi phạm:** `src/utils/checkpoint.py` và `notebooks/LLM_01_pretrain_base_model.ipynb` (Cell 11)
 * **2. Vi phạm gì:** Khi phát hiện bất thường và gọi lệnh `continue` bỏ qua batch lỗi, trạng thái nội bộ của `torch.amp.GradScaler` vẫn giữ nguyên cờ `OptState.UNSCALED` từ lần gọi `scaler.unscale_(optimizer)` trước đó mà không được `scaler.update()` reset lại. Đồng thời ngưỡng phát hiện dị thường quá nhạy cảm (`3.0 x EMA` khi norm chỉ 1.91) dẫn đến việc kích hoạt rollback nhầm lẫn và chọn lùi về `step_1500.pt` thay vì `step_2000.pt`.
