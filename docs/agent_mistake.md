@@ -140,28 +140,84 @@
 
 ---
 
-### 7. Lỗi Kaggle Secrets không tự nạp khiến Notebook bị treo hỏi API Key W&B
-* **File vi phạm:** `notebooks/LLM_01_pretrain_base_model.ipynb`
-* **Vi phạm:** Chỉ đọc cứng duy nhất tên nhãn `"WANDB_API_KEY"` và gọi fallback `wandb.login()` trần khi không thấy key.
-* **Lỗi trước vi phạm & Hậu quả gây ra:**
-  - *Bản chất lỗi:* Trên Kaggle, người dùng có thể đặt nhãn bí mật khác tên (như `wandb`, `wandb_key`) hoặc đã tạo Secret nhưng **quên chưa tích ô vuông (checkbox)** trong menu `Add-ons -> Secrets` để gắn secret vào notebook đang mở. Khi đó, hàm `user_secrets.get_secret("WANDB_API_KEY")` ném ngoại lệ hoặc trả về rỗng. Code cũ gọi tiếp lệnh `wandb.login()`, khiến Jupyter Notebook kích hoạt interactive prompt yêu cầu nhập API key bằng bàn phím.
-  - *Hậu quả:* Cell bị đứng chờ nhập liệu, người dùng ngỡ rằng Kaggle không nhận key dù đã thêm vào Secrets.
-* **Cách khắc phục & Giải thích chi tiết:**
-  - *Mã nguồn:*
+---
+
+## MISTAKE 08: LỆCH ĐƯỜNG DẪN CHECKPOINT KHI CON TRỎ LÀM VIỆC BỊ THAY ĐỔI TRÊN KAGGLE (CƠ CHẾ RESUME THẤT BẠI)
+
+* **1. File vi phạm:** `notebooks/LLM_01_pretrain_base_model.ipynb` và `scripts/train_base.py`
+* **2. Vi phạm gì:** Sử dụng `CHECKPOINT_DIR = os.path.abspath('checkpoints')` phụ thuộc vào con trỏ thư mục hiện tại (`os.getcwd()`), dẫn đến việc tìm checkpoint ở thư mục rỗng và ép mô hình chạy lại từ Step 0 dù checkpoint cũ vẫn tồn tại.
+* **3. Lỗi trước vi phạm & Hậu quả gây ra:**
+  - **Bản chất lỗi:** Trên môi trường Kaggle, hệ thống tệp tin phân tầng thành `/kaggle/working` (thư mục root mặc định) và `/kaggle/working/Prj_LLM` (thư mục repo git). Sau khi người dùng mở lại notebook hoặc sau khi restart kernel, con trỏ làm việc có thể đứng ở `/kaggle/working`.
+  - Lệnh `os.path.abspath('checkpoints')` tự động dịch thành `/kaggle/working/checkpoints/` (thư mục rỗng), trong khi file thực tế `step_500.pt`, `step_1000.pt`, `last_checkpoint.pt` được lưu trong `/kaggle/working/Prj_LLM/checkpoints/`.
+  - **Hậu quả:** Hàm `os.path.exists()` kiểm tra trả về `False`, biến `candidate_ckpt` bị gán bằng `None`. Hệ thống kết luận sai lầm rằng *"chưa từng có checkpoint nào"* và in ra dòng: `🌱 Bắt đầu huấn luyện mới hoàn toàn từ Step 0`, xóa sạch công sức huấn luyện trước đó.
+* **4. Cách khắc phục & Giải thích chi tiết:**
+  - **Mã nguồn khắc phục:** Tự động đối chiếu đa tầng danh sách các đường dẫn ứng viên có thể xảy ra:
     ```python
-    try:
-        from kaggle_secrets import UserSecretsClient
-        user_secrets = UserSecretsClient()
-        for secret_name in ["WANDB_API_KEY", "wandb_api_key", "wandb_key", "wandb", "WANDB"]:
-            try:
-                val = user_secrets.get_secret(secret_name)
-                if val and val.strip():
-                    WANDB_API_KEY = val.strip()
-                    break
-            except Exception:
-                continue
-    except Exception:
-        pass
+    possible_ckpt_dirs = [
+        '/kaggle/working/Prj_LLM/checkpoints',
+        '/kaggle/working/checkpoints',
+        os.path.abspath('checkpoints'),
+    ]
+    CHECKPOINT_DIR = next((d for d in possible_ckpt_dirs if os.path.exists(d)), '/kaggle/working/Prj_LLM/checkpoints')
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    
+    # Quét toàn diện tất cả các step_*.pt để bắt mốc step cao nhất
+    all_step_ckpts = []
+    for d in possible_ckpt_dirs:
+        if os.path.exists(d):
+            all_step_ckpts.extend(glob.glob(os.path.join(d, 'step_*.pt')))
+            
+    if all_step_ckpts:
+        candidate_ckpt = max(all_step_ckpts, key=os.path.getmtime)
+    elif os.path.exists(os.path.join(CHECKPOINT_DIR, 'last_checkpoint.pt')):
+        candidate_ckpt = os.path.join(CHECKPOINT_DIR, 'last_checkpoint.pt')
     ```
-    Nếu không tìm thấy, tự động fallback an toàn sang `WANDB_MODE="offline"` kèm hướng dẫn rõ ràng, không gọi `wandb.login()` rỗng để tránh treo kernel.
-  - *Giải thích lý do:* Tăng tính thích ứng (fault-tolerant) cho notebook, tự động hỗ trợ các cách đặt tên nhãn khác nhau của người dùng và ngăn chặn hoàn toàn việc block kernel khi chạy không có giám sát.
+  - **Giải thích lý do:** Đảm bảo tính thích ứng đa môi trường (Environment Invariance). Hệ thống chủ động kiểm tra sự tồn tại thực tế của file trên đĩa cứng thay vì tin tưởng một đường dẫn tương đối duy nhất, bảo vệ 100% tiến trình Auto-Resume.
+
+---
+
+## MISTAKE 09: LỖI THỨ TỰ KHỞI TẠO BIẾN TRONG CELL JUPYTER (NAMEERROR: CANDIDATE_CKPT & LR)
+
+* **1. File vi phạm:** `notebooks/LLM_01_pretrain_base_model.ipynb` (Cell 4.5 và Cell 5)
+* **2. Vi phạm gì:** Gọi sử dụng biến trước khi khai báo định nghĩa biến (`candidate_ckpt` trước khi tìm checkpoint; `lr` thay vì `effective_lr` trong vòng lặp log).
+* **3. Lỗi trước vi phạm & Hậu quả gây ra:**
+  - **Bản chất lỗi:** 
+    1. Lệnh `rollback_mgr.register_safe_checkpoint(candidate_ckpt)` được đặt ở dòng 57, trong khi khối code gán `candidate_ckpt = None` và tìm file lại nằm ở dòng 59 trở đi.
+    2. Trong vòng lặp huấn luyện, biến được cập nhật cho optimizer là `effective_lr = base_lr * rollback_mgr.current_lr_multiplier`, nhưng dòng `print()` và `tracker.log()` lại gọi tên biến cũ chưa khai báo là `lr`.
+  - **Hậu quả:** Ngay khi restart session và chạy lại cell, Python ném ngoại lệ `NameError: name 'candidate_ckpt' is not defined` và `NameError: name 'lr' is not defined`, làm gián đoạn toàn bộ phiên làm việc của người dùng.
+* **4. Cách khắc phục & Giải thích chi tiết:**
+  - **Mã nguồn khắc phục:**
+    1. Đưa toàn bộ logic tìm kiếm `candidate_ckpt` lên TRƯỚC khi khởi tạo `rollback_mgr`.
+    2. Đổi đồng bộ tất cả các chỗ in và log sang `effective_lr`:
+       ```python
+       print(f'... | LR: {effective_lr:.6f} | ...')
+       tracker.log({'train/learning_rate': effective_lr, ...})
+       ```
+  - **Giải thích lý do:** Tuân thủ nguyên tắc **Định nghĩa trước, Sử dụng sau (Declare Before Use)**. Trong môi trường tương tác notebook, các cell phải độc lập, tự chứa (self-contained) và có thứ tự thực thi từ trên xuống dưới nghiêm ngặt để không bao giờ bị lỗi phụ thuộc trạng thái bộ nhớ đệm (stale kernel state).
+---
+
+## MISTAKE 10: LỖI RUNTIMEERROR GRADSCALER "UNSCALE_() HAS ALREADY BEEN CALLED" KHI KÍCH HOẠT CHECKPOINT ROLLBACK
+
+* **1. File vi phạm:** `src/utils/checkpoint.py` và `notebooks/LLM_01_pretrain_base_model.ipynb` (Cell 11)
+* **2. Vi phạm gì:** Khi phát hiện bất thường và gọi lệnh `continue` bỏ qua batch lỗi, trạng thái nội bộ của `torch.amp.GradScaler` vẫn giữ nguyên cờ `OptState.UNSCALED` từ lần gọi `scaler.unscale_(optimizer)` trước đó mà không được `scaler.update()` reset lại. Đồng thời ngưỡng phát hiện dị thường quá nhạy cảm (`3.0 x EMA` khi norm chỉ 1.91) dẫn đến việc kích hoạt rollback nhầm lẫn và chọn lùi về `step_1500.pt` thay vì `step_2000.pt`.
+* **3. Lỗi trước vi phạm & Hậu quả gây ra:**
+  - **Bản chất lỗi:**
+    1. Cơ chế của PyTorch `GradScaler`: trong 1 vòng lặp bước tối ưu, sau khi gọi `scaler.unscale_(optimizer)`, đối tượng scaler chuyển trạng thái thành `UNSCALED`. Nếu sau đó gặp điều kiện rollback và dùng lệnh `continue`, vòng lặp bước sang step tiếp theo mà không đi qua `scaler.step(optimizer)` và `scaler.update()`. Đến đầu step mới, khi gọi `scaler.unscale_(optimizer)` lần nữa, PyTorch phát hiện cờ trạng thái chưa được dọn dẹp và lập tức ném: `RuntimeError: unscale_() has already been called on this optimizer since the last update()`.
+    2. Ngưỡng phát hiện dị thường quá thấp: `grad_norm = 1.91` vốn là giá trị hoàn toàn bình thường đối với mô hình 44.8M tham số, nhưng do `grad_norm_ema` trước đó thấp (~0.6), phép so sánh `1.91 > 3.0 * 0.6` kích hoạt còi báo động sai.
+    3. Bộ nhớ `last_safe_checkpoint_path` chưa được đăng ký kịp thời tại thời điểm lưu `step_2000.pt`, khiến hàm tìm kiếm lùi sâu về `step_1500.pt`, làm lãng phí 500 steps huấn luyện.
+  - **Hậu quả:** Tiến trình huấn luyện bị crash hoàn toàn tại Step 2210 do ngoại lệ RuntimeError không được xử lý, dừng đứng kernel trên Kaggle.
+* **4. Cách khắc phục & Giải thích chi tiết:**
+  - **Mã nguồn khắc phục:**
+    1. Thêm phương thức `find_latest_safe_checkpoint()` quét tự động các file `step_*.pt` mới nhất và `last_checkpoint.pt` trên đĩa cứng.
+    2. Trong `trigger_rollback()`, gọi bắt buộc `scaler.update()` và `optimizer.zero_grad(set_to_none=True)` để dọn sạch hoàn toàn trạng thái nội bộ của `GradScaler`:
+       ```python
+       if scaler is not None:
+           scaler.update()
+       ```
+    3. Hiệu chỉnh lại điều kiện báo động: bổ sung ngưỡng an toàn sàn `min_grad_norm_threshold = 5.0` và nâng `threshold_factor = 5.0`:
+       ```python
+       threshold = max(self.threshold_factor * self.grad_norm_ema, self.min_grad_norm_threshold)
+       ```
+    4. Trong notebook Cell 11: Đăng ký `rollback_mgr.register_safe_checkpoint(...)` ngay khi vừa lưu `step_*.pt` và `last_checkpoint.pt`.
+  - **Giải thích lý do:** Tuân thủ đúng vòng đời quản lý trạng thái của PyTorch Mixed Precision `torch.amp.GradScaler`. Bằng cách reset trạng thái thông qua `scaler.update()` ngay trong thủ tục rollback, chu kỳ huấn luyện tiếp theo có thể tiếp tục trơn tru mà không bị xung đột cờ trạng thái nội bộ. Đồng thời, việc cân chỉnh ngưỡng giúp tránh báo động giả (False Positives) đối với các biến động gradient thông thường.
+

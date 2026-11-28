@@ -122,6 +122,7 @@ def test_checkpoint_rollback_strategy():
         manager = CheckpointRollbackManager(
             checkpoint_dir=temp_dir,
             threshold_factor=3.0,
+            min_grad_norm_threshold=3.0,
             lr_reduction_ratio=0.20,
             recovery_steps=10,
         )
@@ -140,10 +141,17 @@ def test_checkpoint_rollback_strategy():
             for p in model.parameters():
                 p.fill_(999.0)
 
+        # Giả lập GradScaler unscaled state để kiểm tra reset an toàn
+        scaler = torch.amp.GradScaler("cpu")
+        dummy_loss = (sum(p.sum() for p in model.parameters()))
+        scaler.scale(dummy_loss).backward()
+        scaler.unscale_(optimizer)
+
         # Bước 4: Kích hoạt Rollback tự động
         meta = manager.trigger_rollback(
             model=model,
             optimizer=optimizer,
+            scaler=scaler,
             device="cpu",
             failed_step=523,
             reason="Gradient norm spike: 10.0 > 3.0 * EMA",
@@ -153,6 +161,11 @@ def test_checkpoint_rollback_strategy():
         assert meta["step"] == 500
         for p in model.parameters():
             assert not torch.allclose(p, torch.tensor([999.0]))
+
+        # Kiểm tra scaler đã được reset an toàn: gọi unscale_ tiếp không bị crash
+        dummy_loss2 = (sum(p.sum() for p in model.parameters()))
+        scaler.scale(dummy_loss2).backward()
+        scaler.unscale_(optimizer)  # Phải thành công, không ném RuntimeError!
 
         # Kiểm tra siêu tham số được điều chỉnh: LR giảm 20%
         current_lr = optimizer.param_groups[0]["lr"]

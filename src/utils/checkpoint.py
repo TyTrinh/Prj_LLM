@@ -175,7 +175,8 @@ class CheckpointRollbackManager:
     def __init__(
         self,
         checkpoint_dir: str,
-        threshold_factor: float = 3.0,
+        threshold_factor: float = 5.0,
+        min_grad_norm_threshold: float = 5.0,
         ema_alpha: float = 0.95,
         lr_reduction_ratio: float = 0.20,
         tight_clip_factor: float = 0.50,
@@ -183,6 +184,7 @@ class CheckpointRollbackManager:
     ):
         self.checkpoint_dir = os.path.abspath(checkpoint_dir)
         self.threshold_factor = threshold_factor
+        self.min_grad_norm_threshold = min_grad_norm_threshold
         self.ema_alpha = ema_alpha
         self.lr_reduction_ratio = lr_reduction_ratio
         self.tight_clip_factor = tight_clip_factor
@@ -205,7 +207,8 @@ class CheckpointRollbackManager:
     def check_gradient_anomaly(self, grad_norm: float) -> bool:
         """
         Kiểm tra tính bất thường của gradient norm:
-        Trả về True nếu phát hiện bất thường (NaN, Inf, hoặc vượt quá threshold_factor * EMA).
+        Trả về True nếu phát hiện bất thường thực sự (NaN, Inf, hoặc vượt quá threshold_factor * EMA
+        VÀ vượt qua ngưỡng an toàn tối thiểu min_grad_norm_threshold).
         """
         if math.isnan(grad_norm) or math.isinf(grad_norm):
             return True
@@ -215,13 +218,32 @@ class CheckpointRollbackManager:
             return False
 
         # Kiểm tra ngưỡng bất thường so với đường trung bình động (EMA)
-        threshold = self.threshold_factor * self.grad_norm_ema
+        threshold = max(self.threshold_factor * self.grad_norm_ema, self.min_grad_norm_threshold)
         if grad_norm > threshold:
             return True
 
         # Cập nhật EMA khi gradient ở ngưỡng an toàn
         self.grad_norm_ema = self.ema_alpha * self.grad_norm_ema + (1.0 - self.ema_alpha) * grad_norm
         return False
+
+    def find_latest_safe_checkpoint(self) -> Optional[str]:
+        """Tìm file checkpoint an toàn mới nhất (ưu tiên last_safe_checkpoint, sau đó step_*.pt mới nhất, rồi last_checkpoint.pt)."""
+        if self.last_safe_checkpoint_path and os.path.exists(self.last_safe_checkpoint_path):
+            return self.last_safe_checkpoint_path
+
+        import glob
+        step_ckpts = glob.glob(os.path.join(self.checkpoint_dir, "step_*.pt"))
+        if step_ckpts:
+            return max(step_ckpts, key=os.path.getmtime)
+
+        candidates = [
+            os.path.join(self.checkpoint_dir, "last_checkpoint.pt"),
+            os.path.join(self.checkpoint_dir, "base_model.pt"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                return c
+        return None
 
     def trigger_rollback(
         self,
@@ -234,19 +256,9 @@ class CheckpointRollbackManager:
         reason: str = "Gradient norm spike anomaly",
     ) -> Dict[str, Any]:
         """
-        Thực thi quy trình Rollback về checkpoint an toàn gần nhất.
+        Thực thi quy trình Rollback về checkpoint an toàn gần nhất và reset trạng thái an toàn cho GradScaler.
         """
-        target_ckpt = self.last_safe_checkpoint_path
-        if target_ckpt is None or not os.path.exists(target_ckpt):
-            # Thử tìm file last_checkpoint.pt hoặc base_model.pt trong checkpoint_dir
-            candidates = [
-                os.path.join(self.checkpoint_dir, "last_checkpoint.pt"),
-                os.path.join(self.checkpoint_dir, "base_model.pt"),
-            ]
-            for c in candidates:
-                if os.path.exists(c):
-                    target_ckpt = c
-                    break
+        target_ckpt = self.find_latest_safe_checkpoint()
 
         if target_ckpt is None or not os.path.exists(target_ckpt):
             raise FileNotFoundError(
@@ -267,7 +279,14 @@ class CheckpointRollbackManager:
             device=device,
         )
 
-        # 2. Điều chỉnh siêu tham số: Giảm LR 20% và siết chặt Gradient Clipping
+        # 2. Xóa sạch gradients trên optimizer để loại bỏ hoàn toàn batch lỗi
+        optimizer.zero_grad(set_to_none=True)
+
+        # 3. QUAN TRỌNG: Reset trạng thái GradScaler để không bị lỗi "unscale_() has already been called" ở step kế tiếp
+        if scaler is not None:
+            scaler.update()
+
+        # 4. Điều chỉnh siêu tham số: Giảm LR 20% và siết chặt Gradient Clipping
         self.in_recovery = True
         self.recovery_remaining = self.recovery_steps
         self.current_lr_multiplier = 1.0 - self.lr_reduction_ratio
@@ -284,6 +303,14 @@ class CheckpointRollbackManager:
             "lr_multiplier": self.current_lr_multiplier,
             "clip_multiplier": self.current_clip_multiplier,
         }
+        self.rollback_history.append(rollback_record)
+
+        print(f"✅ Rollback hoàn tất! Khôi phục về Step {restored_meta.get('step', 0)}.")
+        print(f"⚡ Điều chỉnh an toàn: Giảm tạm thời 20% LR (x{self.current_lr_multiplier:.2f}) "
+              f"và siết Gradient Clipping (x{self.tight_clip_factor:.2f}) trong {self.recovery_steps} steps tiếp theo.")
+        print("=" * 70)
+
+        return restored_meta
         self.rollback_history.append(rollback_record)
 
         print(f"✅ Rollback hoàn tất! Khôi phục về Step {restored_meta.get('step', 0)}.")
